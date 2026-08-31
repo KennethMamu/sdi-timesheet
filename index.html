@@ -353,9 +353,52 @@ function buildFullDocument(state){
 }
 
 /* ============================================================
+   SUPABASE BACKEND
+   ------------------------------------------------------------
+   This variant of the app (built for standalone hosting, e.g. GitHub
+   Pages) has no claude.ai artifact to publish to. Instead it's a thin
+   client over a Supabase Edge Function ("api") backed by a real Postgres
+   database — every device that opens this page talks to the same shared
+   backend, so data stays in sync across everyone using it, not just
+   mirrored to one browser's local storage.
+
+   The anon key below is meant to be public (same as any client-side
+   Supabase app) — it only grants access to the "sessions" table's row
+   layer of protection, and the Edge Function itself (which runs with a
+   private service-role key, never shipped to the browser) is the only
+   thing that can actually read or write the real data. See the comment
+   at the top of the Edge Function source for the full auth model.
+   ============================================================ */
+var SUPABASE_URL = 'https://egzkmwoctpqkprqmbrux.supabase.co';
+var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVnemttd29jdHBxa3BycW1icnV4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNTkyMzUsImV4cCI6MjEwMzczNTIzNX0.eCkVfdTe4swKupE0g000X_TSKaC2DU7jY3vyfBVNUnE';
+var API_URL = SUPABASE_URL + '/functions/v1/api';
+
+function callApi(action, payload){
+  var body = Object.assign({ action: action }, payload || {});
+  return fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SUPABASE_ANON_KEY },
+    body: JSON.stringify(body)
+  }).then(function(res){
+    return res.json().catch(function(){ return {}; }).then(function(data){
+      if(!res.ok || !data || !data.ok){
+        var err = new Error((data && data.error) || 'request_failed');
+        err.code = data && data.error;
+        throw err;
+      }
+      return data;
+    });
+  }, function(networkErr){
+    var err = new Error('network_error');
+    err.code = 'network_error';
+    throw err;
+  });
+}
+
+/* ============================================================
    SESSION (per-tab; survives the reload publish() triggers)
    ============================================================ */
-var session = { role: null, employeeId: null, adminName: null };
+var session = { role: null, employeeId: null, adminName: null, token: null };
 try{
   var saved = sessionStorage.getItem('sdi_session');
   if(saved) session = JSON.parse(saved);
@@ -363,6 +406,99 @@ try{
 
 function saveSession(){
   try{ sessionStorage.setItem('sdi_session', JSON.stringify(session)); }catch(e){}
+}
+
+/* ============================================================
+   LIVE DATA (replaces the artifact/localStorage persistence layer)
+   ------------------------------------------------------------
+   STATE starts out as whatever was baked into this file at build time
+   (below), purely so the very first paint isn't blank. DATA_READY stays
+   false — render() shows a lightweight loading screen — until the first
+   real fetch from Supabase lands, at which point STATE is replaced with
+   live data and DATA_READY flips true. From then on, a poll every few
+   seconds keeps every open device in sync with everyone else's changes.
+   ============================================================ */
+var DATA_READY = false;
+var DATA_LOAD_ERROR = null;
+var POLL_INTERVAL_MS = 7000;
+var pollTimer = null;
+
+function applyBootstrapState(data){
+  STATE.orgName = data.orgName;
+  STATE.primaryAdmin = data.primaryAdmin;
+  STATE.admins = data.admins || [];
+  STATE.adminEmails = {};
+  STATE.employees = data.employees || [];
+  STATE.entries = {};
+  STATE.concerns = [];
+}
+function applyServerState(data){
+  STATE.orgName = data.orgName;
+  STATE.primaryAdmin = data.primaryAdmin;
+  if(data.role === 'admin'){
+    STATE.admins = data.admins || [];
+    STATE.adminEmails = data.adminEmails || {};
+    STATE.employees = data.employees || [];
+    STATE.entries = data.entries || {};
+    STATE.concerns = data.concerns || [];
+  } else if(data.role === 'employee'){
+    STATE.employees = [data.employee];
+    STATE.entries = {};
+    STATE.entries[data.employee.id] = data.myEntries || {};
+    STATE.concerns = data.myConcerns || [];
+  }
+}
+
+function stopPolling(){
+  if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
+}
+function startPolling(){
+  stopPolling();
+  pollTimer = setInterval(function(){
+    if(!session.token) return;
+    callApi('get-state', { token: session.token }).then(function(data){
+      applyServerState(data);
+      safeRender();
+    }).catch(function(err){
+      if(err && err.code === 'invalid_session'){
+        stopPolling();
+        session = { role: null, employeeId: null, adminName: null, token: null };
+        saveSession();
+        DATA_READY = true;
+        loadInitialData();
+      }
+      // Any other error (offline, etc.) — just try again next tick.
+    });
+  }, POLL_INTERVAL_MS);
+}
+
+function loadInitialData(){
+  var request;
+  if(session.token && session.role){
+    request = callApi('get-state', { token: session.token });
+  } else {
+    request = callApi('bootstrap', {});
+  }
+  request.then(function(data){
+    DATA_READY = true;
+    DATA_LOAD_ERROR = null;
+    if(data.role){
+      applyServerState(data);
+      startPolling();
+    } else {
+      applyBootstrapState(data);
+    }
+    render();
+  }).catch(function(err){
+    if(err && err.code === 'invalid_session'){
+      session = { role: null, employeeId: null, adminName: null, token: null };
+      saveSession();
+      return loadInitialData();
+    }
+    DATA_READY = true;
+    DATA_LOAD_ERROR = 'Couldn’t reach the timesheet server. Check your internet connection and try again.';
+    render();
+  });
 }
 
 /* ============================================================
@@ -401,39 +537,18 @@ function saveUiState(){
 
 /* ============================================================
    CAPABILITIES
+   ------------------------------------------------------------
+   This standalone build never runs inside the claude.ai artifact host,
+   so there's no artifactCap/publish() here — Supabase (above) is always
+   the source of truth. downloadsCap is still resolved because it's a
+   real claude.ai-only feature some future embedding could offer; on a
+   plain GitHub Pages visit window.claude is simply absent, so this
+   resolves to null almost immediately and offerDownload() falls back to
+   a normal browser Blob download instead (see SELF_HOSTED below).
    ============================================================ */
-var artifactCap = null;
 var downloadsCap = null;
-var canWrite = true; // optimistic until first not_writer/not_granted rejection
-var capsReady = false;
+var canWrite = true; // always true here — writes go through the API, which enforces its own auth
 
-/* Outside claude.ai (a self-hosted copy of this file, opened directly, etc.)
-   there is no shared document to publish to. So this page falls back to
-   saving into the browser's own localStorage — durable across reloads on
-   THIS device/browser only, never synced to anyone else. Inside claude.ai,
-   artifactCap is always the source of truth, but every successful save is
-   still mirrored to this same local backup (see persist()) purely as a
-   disaster-recovery copy for the boot-time recovery above. */
-function tryLoadLocalFallback(){
-  try{
-    var backup = readLocalBackupState();
-    if(backup) STATE = backup;
-  }catch(e){ /* storage unavailable or corrupt — keep the baked-in STATE */ }
-}
-function saveLocalFallback(){
-  try{ if(window.localStorage) localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(STATE)); }catch(e){}
-}
-
-/* True while focus is inside an editable field in the app — used below so
-   the capability check's background render() can't wipe out text someone
-   is actively typing (e.g. filling in several days on Edit Entries) before
-   they've saved it. window.claude.use() always resolves asynchronously,
-   sometimes several seconds after the page is already interactive, so this
-   render can land in the middle of real typing. Skipping it there is safe:
-   canWrite/artifactCap are plain variables that persist() and every other
-   render() already read fresh, so nothing is lost by catching up on the
-   next real render instead — which fires the moment the person does
-   anything else (saves, switches tabs, etc). */
 function userIsEditing(){
   var el = document.activeElement;
   if(!el) return false;
@@ -446,25 +561,9 @@ function safeRender(){
   render();
 }
 
-(function initCaps(){
-  if(!window.claude || typeof window.claude.use !== 'function'){
-    capsReady = true;
-    canWrite = false;
-    tryLoadLocalFallback();
-    return;
-  }
-  Promise.all([
-    window.claude.use('artifact').catch(function(){ return null; }),
-    window.claude.use('downloads').catch(function(){ return null; })
-  ]).then(function(res){
-    artifactCap = res[0];
-    downloadsCap = res[1];
-    if(!artifactCap){ canWrite = false; tryLoadLocalFallback(); }
-    capsReady = true;
-    safeRender();
-  });
-  // Safety timeout matches the platform's own ~10s resolution window.
-  setTimeout(function(){ if(!capsReady){ capsReady = true; canWrite = false; tryLoadLocalFallback(); safeRender(); } }, 10500);
+(function initDownloadsCap(){
+  if(!window.claude || typeof window.claude.use !== 'function') return;
+  window.claude.use('downloads').then(function(cap){ downloadsCap = cap; }).catch(function(){});
 })();
 
 /* ============================================================
@@ -640,61 +739,62 @@ function toast(msg, kind){
    PERSIST: mutate STATE, then try to publish the new document.
    ============================================================ */
 var publishing = false;
-function persist(mutateFn, opts){
+/* Friendly text for the API error codes a write can come back with. Falls
+   back to a generic message for anything not listed here. */
+var API_ERROR_MESSAGES = {
+  invalid_session: 'Your session expired — please log in again.',
+  unauthorized: 'Your session expired — please log in again.',
+  network_error: 'Couldn’t reach the timesheet server. Check your internet connection and try again.',
+  already_clocked_in: 'You’re already clocked in today.',
+  already_clocked_out: 'You’re already clocked out today.',
+  not_clocked_in: 'Clock in first.',
+  wrong_current_passcode: 'Current passcode is incorrect.',
+  passcode_too_short: 'Passcode must be at least 4 characters.',
+  already_set_up: 'That profile already has a passcode set — try logging in instead.',
+  invalid_login: 'That didn’t match our records.',
+  already_admin: 'That person is already an admin.',
+  cannot_remove_primary: 'The primary admin can’t be removed.',
+};
+function apiErrorMessage(err){
+  var code = err && err.code;
+  return API_ERROR_MESSAGES[code] || ('Something went wrong (' + (code || 'error') + '). Please try again.');
+}
+
+/* Replaces the old artifact-publish persist(): applies an optimistic local
+   mutation (same pattern as before — instant UI feedback), then calls the
+   Supabase Edge Function to make it real. On failure the optimistic change
+   is rolled back and an error toast explains why. On success, if the
+   server handed back canonical data (e.g. a freshly generated employee id,
+   or — for admin-only actions — a full re-synced state), that's merged in
+   too so this tab doesn't have to wait for the next poll to see it. */
+function apiPersist(action, payload, mutateFn, opts){
   opts = opts || {};
   var snapshot = JSON.parse(JSON.stringify(STATE));
-  try{
-    mutateFn(STATE);
-  }catch(err){
-    console.error('mutation failed', err);
-    toast('Something went wrong making that change.', 'error');
-    return Promise.resolve(false);
+  if(mutateFn){
+    try{ mutateFn(STATE); }
+    catch(err){
+      console.error('mutation failed', err);
+      toast('Something went wrong making that change.', 'error');
+      return Promise.resolve(false);
+    }
   }
   render(); // optimistic UI
 
-  // Mirror every successful change to this browser's local storage — even
-  // when the live claude.ai save below is what actually matters. This is
-  // a silent disaster-recovery copy: if this page's own embedded data ever
-  // fails to load on a future visit, boot falls back to this instead of
-  // going blank. Never shown to the user, never a substitute for the real
-  // save when artifactCap exists.
-  saveLocalFallback();
-
-  if(!artifactCap){
-    // No live capability (viewing outside claude.ai, or unsupported host):
-    // the local save above IS the persistence here, so be honest about it.
-    toast((opts.successMsg || 'Saved') + ' — saved to this browser only, not synced to other viewers.', 'success');
-    return Promise.resolve(true);
-  }
-
-  publishing = true;
-  saveSession();
-  saveUiState();
-  var html = buildFullDocument(STATE);
-  return artifactCap.publish(html).then(function(){
-    // A successful html publish reloads this view too; nothing else to do.
+  return callApi(action, payload).then(function(data){
+    if(opts.onSuccess) opts.onSuccess(data);
+    toast(opts.successMsg || 'Saved', 'success');
     return true;
   }).catch(function(err){
-    publishing = false;
-    var code = err && err.code;
-    if(code === 'conflict'){
-      // Routine: the shell is already reloading every view to the winner.
-      return false;
-    }
-    if(code === 'not_writer' || code === 'not_granted' || code === 'capability_disabled'){
-      canWrite = false;
-      STATE = snapshot; // revert optimistic change
-      render();
-      toast('You have view-only access to this timesheet. Ask ' + (STATE.primaryAdmin || 'the admin') + ' to share it with edit access so changes can be saved.', 'error');
-      return false;
-    }
     STATE = snapshot;
     render();
-    if(code === 'rate_limited'){
-      toast('Saving too fast — please wait a moment and try again.', 'error');
-    } else {
-      toast('Could not save that change (' + (code || 'error') + '). Please try again.', 'error');
+    if(err && err.code === 'invalid_session'){
+      session = { role: null, employeeId: null, adminName: null, token: null };
+      saveSession();
+      stopPolling();
+      DATA_READY = false;
+      loadInitialData();
     }
+    toast(apiErrorMessage(err), 'error');
     return false;
   });
 }
@@ -1052,7 +1152,7 @@ function surnameOf(name){
    ============================================================ */
 var ui = {
   adminTab: 'overview', modal: null, modalData: {}, adminEmpId: null, concernFilter: 'open', overviewShift: 'all',
-  employeeMonth: null, adminMonth: null, revealedPasscodes: {}, peopleSort: '',
+  employeeMonth: null, adminMonth: null, peopleSort: '',
   landingSearch: { query: '', selectedId: null, error: null }
 };
 restoreUiState(ui); // see "UI STATE" above — carries tab/employee/month across the save-triggered reload
@@ -1144,9 +1244,24 @@ function pickAdminEmployee(empId){
 /* ============================================================
    RENDER DISPATCH
    ============================================================ */
+function renderLoadingHTML(){
+  return '<div class="center-wrap" style="padding-top:80px;">' +
+    '<div class="card card-pad stack" style="max-width:380px; width:100%; text-align:center; align-items:center;">' +
+      '<h1 class="section-title" style="font-size:20px; margin:0;">Loading your timesheet…</h1>' +
+      '<p class="muted" style="margin:0;">Connecting to the server.</p>' +
+    '</div></div>';
+}
 function render(){
   var app = $('app');
   if(!app) return;
+  if(!DATA_READY){
+    app.innerHTML = renderLoadingHTML();
+    return;
+  }
+  if(DATA_LOAD_ERROR){
+    app.innerHTML = renderFatalErrorHTML(DATA_LOAD_ERROR);
+    return;
+  }
   // Guard the whole render: if any view function throws (a bad state shape,
   // an unexpected edge case), fall back to a clear "something went wrong"
   // screen instead of leaving a blank or half-drawn page on screen.
@@ -1786,15 +1901,10 @@ function adminPeopleTab(){
   '</select>';
   var sortedEmployees = sortCmp ? STATE.employees.slice().sort(sortCmp) : STATE.employees;
   var empRows = sortedEmployees.map(function(e){
-    var revealed = !!ui.revealedPasscodes[e.id];
-    var passcodeCell;
-    if(!e.passcode){
-      passcodeCell = '<span class="muted">Not set</span>';
-    } else if(revealed){
-      passcodeCell = '<span class="mono">' + esc(e.passcode) + '</span> <button class="btn btn-sm btn-ghost" data-action="toggle-passcode-reveal" data-id="' + esc(e.id) + '">Hide</button>';
-    } else {
-      passcodeCell = '<span class="mono muted">••••••</span> <button class="btn btn-sm btn-ghost" data-action="toggle-passcode-reveal" data-id="' + esc(e.id) + '">Show</button>';
-    }
+    // No plaintext reveal here (unlike the claude.ai-hosted version): this
+    // build stores passcodes only as one-way hashes, so even an admin can't
+    // look one up — Reset is the only recovery path when someone forgets.
+    var passcodeCell = e.passcodeSet ? '<span class="muted">Set</span>' : '<span class="muted">Not set</span>';
     return '<tr>' +
       '<td>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</td>' +
       '<td class="muted">' + esc(e.email || '—') + '</td>' +
@@ -1802,7 +1912,7 @@ function adminPeopleTab(){
       '<td>' + esc(e.position||'') + '</td>' +
       '<td><span class="badge-shift">' + esc(e.shift) + '</span></td>' +
       '<td>' + passcodeCell + '</td>' +
-      '<td>' + (e.passcode ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (e.passcodeSet ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="edit-employee-open" data-id="' + esc(e.id) + '">Edit</button></td>' +
       '<td>' + (e.active
           ? '<button class="btn btn-sm btn-danger" data-action="toggle-employee-active" data-id="' + esc(e.id) + '">Deactivate</button>'
@@ -2183,9 +2293,12 @@ function wireModalEnterSubmit(){
 var handlers = {
   'reload-page': function(){ location.reload(); },
   'go-landing': function(){
-    session = { role: null, employeeId: null, adminName: null };
+    if(session.token) callApi('logout', { token: session.token }).catch(function(){});
+    stopPolling();
+    session = { role: null, employeeId: null, adminName: null, token: null };
     ui.landingSearch = { query: '', selectedId: null, error: null };
-    saveSession(); ui.modal = null; ui.modalData = {}; render();
+    saveSession(); ui.modal = null; ui.modalData = {};
+    DATA_READY = false; render(); loadInitialData();
   },
   'landing-view-employee': function(){
     var empId = ui.landingSearch.selectedId;
@@ -2204,10 +2317,10 @@ var handlers = {
       return;
     }
     ui.modalData = {};
-    if(emp.passcode){
-      session = { role: 'employee-auth', pendingEmployeeId: emp.id, employeeId: null, adminName: null };
+    if(emp.passcodeSet){
+      session = { role: 'employee-auth', pendingEmployeeId: emp.id, employeeId: null, adminName: null, token: null };
     } else {
-      session = { role: 'employee-setup', pendingEmployeeId: emp.id, employeeId: null, adminName: null };
+      session = { role: 'employee-setup', pendingEmployeeId: emp.id, employeeId: null, adminName: null, token: null };
     }
     ui.landingSearch = { query: '', selectedId: null, error: null };
     saveSession(); render();
@@ -2219,25 +2332,34 @@ var handlers = {
     if(p1 !== p2){ ui.modalData.passcodeError = 'Passcodes don’t match.'; render(); return; }
     var empId = session.pendingEmployeeId;
     ui.modalData.passcodeError = null;
-    // Move the session into the dashboard state first, so if publish()
-    // reloads this view, sessionStorage already holds the post-login state.
-    session = { role: 'employee', employeeId: empId, adminName: null };
-    persist(function(s){
-      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
-      if(e) e.passcode = p1;
-    }, { successMsg: 'Access created' });
+    callApi('employee-setup', { employeeId: empId, passcode: p1 }).then(function(data){
+      session = { role: 'employee', employeeId: empId, adminName: null, token: data.token };
+      saveSession();
+      applyServerState(data);
+      startPolling();
+      toast('Access created', 'success');
+      render();
+    }).catch(function(err){
+      ui.modalData.passcodeError = apiErrorMessage(err);
+      render();
+    });
   },
   'employee-auth-submit': function(){
     var pass = ($('auth-passcode') || {}).value || '';
     var emp = getEmployee(session.pendingEmployeeId);
     if(!emp){ return; }
-    if(pass !== emp.passcode){
-      ui.modalData.passcodeError = 'That passcode doesn’t match. Ask an admin to reset it if you forgot.';
-      render(); return;
-    }
-    ui.modalData.passcodeError = null;
-    session = { role: 'employee', employeeId: emp.id, adminName: null };
-    saveSession(); render();
+    callApi('employee-login', { employeeId: emp.id, passcode: pass }).then(function(data){
+      session = { role: 'employee', employeeId: emp.id, adminName: null, token: data.token };
+      saveSession();
+      applyServerState(data);
+      startPolling();
+      render();
+    }).catch(function(err){
+      ui.modalData.passcodeError = err && err.code === 'invalid_login'
+        ? 'That passcode doesn’t match. Ask an admin to reset it if you forgot.'
+        : apiErrorMessage(err);
+      render();
+    });
   },
   'go-admin-login': function(){
     session.role = 'admin-login'; ui.modalData = { loginError: null }; render();
@@ -2246,20 +2368,26 @@ var handlers = {
     var name = $('admin-login-name') ? $('admin-login-name').value : '';
     var pass = $('admin-login-pass') ? $('admin-login-pass').value : '';
     ui.modalData.lastTriedName = name;
-    if(STATE.admins.indexOf(name) === -1){
-      ui.modalData.loginError = 'That name is not on the admin list.'; render(); return;
-    }
-    if(pass !== STATE.adminPassword){
-      ui.modalData.loginError = 'Incorrect password.'; render(); return;
-    }
-    ui.modalData.loginError = null;
-    session = { role: 'admin', employeeId: null, adminName: name };
-    ui.adminTab = 'overview';
-    saveSession(); render();
+    callApi('admin-login', { name: name, password: pass }).then(function(data){
+      session = { role: 'admin', employeeId: null, adminName: name, token: data.token };
+      ui.adminTab = 'overview';
+      saveSession();
+      applyServerState(data);
+      startPolling();
+      render();
+    }).catch(function(err){
+      ui.modalData.loginError = err && err.code === 'invalid_login'
+        ? 'That name/password combination doesn’t match our records.'
+        : apiErrorMessage(err);
+      render();
+    });
   },
   'admin-logout': function(){
-    session = { role: null, employeeId: null, adminName: null };
-    saveSession(); render();
+    if(session.token) callApi('logout', { token: session.token }).catch(function(){});
+    stopPolling();
+    session = { role: null, employeeId: null, adminName: null, token: null };
+    saveSession();
+    DATA_READY = false; render(); loadInitialData();
   },
   'open-concern-modal': function(el){
     ui.modal = 'concern'; ui.modalData = { day: parseInt(el.dataset.day, 10), month: empMonth() }; render();
@@ -2279,9 +2407,9 @@ var handlers = {
     var existing = getEntry(emp.id, monthKey, day);
     if(existing && existing.timeIn){ toast('You’re already clocked in today.', 'error'); return; }
     var stamp = nowTimeHHMM();
-    persist(function(s){
-      setEntry(emp.id, monthKey, day, { timeIn: stamp, status: (existing && existing.status) === 'A' ? 'A' : 'P' });
-    }, { successMsg: 'Clocked in at ' + fmtTime12(stamp) });
+    apiPersist('punch', { token: session.token, field: 'timeIn', monthKey: monthKey, day: day, stamp: stamp },
+      function(s){ setEntry(emp.id, monthKey, day, { timeIn: stamp, status: (existing && existing.status) === 'A' ? 'A' : 'P' }); },
+      { successMsg: 'Clocked in at ' + fmtTime12(stamp) });
   },
   'punch-time-out': function(){
     var emp = getEmployee(session.employeeId);
@@ -2297,9 +2425,9 @@ var handlers = {
     if(!existing || !existing.timeIn){ toast('Clock in first.', 'error'); return; }
     if(existing.timeOut){ toast('You’re already clocked out today.', 'error'); return; }
     var stamp = nowTimeHHMM();
-    persist(function(s){
-      setEntry(emp.id, monthKey, day, { timeOut: stamp });
-    }, { successMsg: 'Clocked out at ' + fmtTime12(stamp) });
+    apiPersist('punch', { token: session.token, field: 'timeOut', monthKey: monthKey, day: day, stamp: stamp },
+      function(s){ setEntry(emp.id, monthKey, day, { timeOut: stamp }); },
+      { successMsg: 'Clocked out at ' + fmtTime12(stamp) });
   },
   'submit-concern': function(){
     var ta = $('concern-message');
@@ -2308,12 +2436,14 @@ var handlers = {
     var day = ui.modalData.day;
     var month = ui.modalData.month;
     ui.modal = null;
-    persist(function(s){
-      s.concerns.push({
-        id: uid('concern'), empId: session.employeeId, day: day, month: month, message: msg,
-        status: 'open', submittedAt: new Date().toISOString(), resolvedAt: null, adminReply: null
-      });
-    }, { successMsg: 'Concern submitted' });
+    apiPersist('submit-concern', { token: session.token, day: day, month: month, message: msg },
+      function(s){
+        s.concerns.push({
+          id: uid('concern'), empId: session.employeeId, day: day, month: month, message: msg,
+          status: 'open', submittedAt: new Date().toISOString(), resolvedAt: null, adminReply: null
+        });
+      },
+      { successMsg: 'Concern submitted' });
   },
   'download-my-timesheet': function(){
     var emp = getEmployee(session.employeeId); if(!emp) return;
@@ -2331,16 +2461,18 @@ var handlers = {
     var cur = ($('pc-current') || {}).value || '';
     var n1 = ($('pc-new-1') || {}).value || '';
     var n2 = ($('pc-new-2') || {}).value || '';
-    if(cur !== emp.passcode){ ui.modalData.pcError = 'Current passcode is incorrect.'; render(); return; }
     if(n1.length < 4){ ui.modalData.pcError = 'New passcode must be at least 4 characters.'; render(); return; }
     if(n1 !== n2){ ui.modalData.pcError = 'New passcodes don’t match.'; render(); return; }
     ui.modalData.pcError = null;
     ui.modal = null;
-    var empId = emp.id;
-    persist(function(s){
-      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
-      if(e) e.passcode = n1;
-    }, { successMsg: 'Passcode changed' });
+    callApi('change-passcode', { token: session.token, current: cur, next: n1 }).then(function(){
+      toast('Passcode changed', 'success');
+      render();
+    }).catch(function(err){
+      ui.modal = 'changePasscode';
+      ui.modalData.pcError = err && err.code === 'wrong_current_passcode' ? 'Current passcode is incorrect.' : apiErrorMessage(err);
+      render();
+    });
   },
   'month-prev': function(el){
     if(el.dataset.scope === 'employee'){ ui.employeeMonth = shiftMonthKey(empMonth(), -1); }
@@ -2400,19 +2532,21 @@ var handlers = {
       var notes = tr.querySelector('.entry-notes').value || null;
       patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, notes: notes };
     });
-    persist(function(s){
-      Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); });
-    }, { successMsg: 'Entries saved' });
+    apiPersist('save-entries', { token: session.token, employeeId: empId, monthKey: monthKey, patches: patches },
+      function(s){ Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); }); },
+      { successMsg: 'Entries saved' });
   },
   'concern-filter': function(el){ ui.concernFilter = el.dataset.filter; render(); },
   'resolve-concern': function(el){
     var id = el.dataset.id;
     var row = el.closest('.concern-admin-row');
     var reply = row ? (row.querySelector('.concern-reply') || {}).value : '';
-    persist(function(s){
-      var c = s.concerns.filter(function(x){ return x.id === id; })[0];
-      if(c){ c.status = 'resolved'; c.resolvedAt = new Date().toISOString(); c.adminReply = (reply || '').trim() || null; }
-    }, { successMsg: 'Concern resolved' });
+    apiPersist('resolve-concern', { token: session.token, concernId: id, reply: reply },
+      function(s){
+        var c = s.concerns.filter(function(x){ return x.id === id; })[0];
+        if(c){ c.status = 'resolved'; c.resolvedAt = new Date().toISOString(); c.adminReply = (reply || '').trim() || null; }
+      },
+      { successMsg: 'Concern resolved' });
   },
   'add-employee-open': function(){ ui.modal = 'addEmployee'; render(); },
   'add-employee-submit': function(){
@@ -2428,10 +2562,26 @@ var handlers = {
     var id = baseId, n = 1;
     while(getEmployee(id)){ id = baseId + '-' + (++n); }
     ui.modal = null;
-    persist(function(s){
-      s.employees.push({ id: id, name: name, email: email, department: dept, position: position, manager: s.primaryAdmin, shift: shift, shiftLabel: shiftLabels[shift], active: true, passcode: null });
-      s.entries[id] = {};
-    }, { successMsg: 'Employee added' });
+    apiPersist('add-employee', { token: session.token, name: name, email: email, department: dept, position: position, shift: shift },
+      function(s){
+        s.employees.push({ id: id, name: name, email: email, department: dept, position: position, manager: s.primaryAdmin, shift: shift, shiftLabel: shiftLabels[shift], active: true, passcodeSet: false });
+        s.entries[id] = {};
+      },
+      {
+        successMsg: 'Employee added',
+        // The server independently resolves id collisions against the live
+        // database (other admins may have added someone with a clashing
+        // slug since this tab last synced) — if it picked a different id
+        // than our optimistic guess, swap it in everywhere.
+        onSuccess: function(data){
+          if(data.id && data.id !== id){
+            var e = STATE.employees.filter(function(x){ return x.id === id; })[0];
+            if(e) e.id = data.id;
+            STATE.entries[data.id] = STATE.entries[id] || {};
+            delete STATE.entries[id];
+          }
+        }
+      });
   },
   'edit-employee-open': function(el){
     ui.modal = 'editEmployee'; ui.modalData = { empId: el.dataset.id }; render();
@@ -2442,17 +2592,21 @@ var handlers = {
     var dept = (($('edit-emp-dept')||{}).value || '').trim() || null;
     var position = (($('edit-emp-position')||{}).value || '').trim() || null;
     ui.modal = null;
-    persist(function(s){
-      var e = s.employees.filter(function(x){ return x.id === id; })[0];
-      if(e){ e.email = email; e.department = dept; e.position = position; }
-    }, { successMsg: 'Employee updated' });
+    apiPersist('edit-employee', { token: session.token, employeeId: id, email: email, department: dept, position: position },
+      function(s){
+        var e = s.employees.filter(function(x){ return x.id === id; })[0];
+        if(e){ e.email = email; e.department = dept; e.position = position; }
+      },
+      { successMsg: 'Employee updated' });
   },
   'toggle-employee-active': function(el){
     var id = el.dataset.id;
-    persist(function(s){
-      var e = s.employees.filter(function(x){ return x.id === id; })[0];
-      if(e) e.active = !e.active;
-    }, { successMsg: 'Updated' });
+    apiPersist('toggle-employee-active', { token: session.token, employeeId: id },
+      function(s){
+        var e = s.employees.filter(function(x){ return x.id === id; })[0];
+        if(e) e.active = !e.active;
+      },
+      { successMsg: 'Updated' });
   },
   'delete-employee-open': function(el){
     ui.modal = 'confirmDeleteEmployee'; ui.modalData = { empId: el.dataset.id }; render();
@@ -2460,15 +2614,12 @@ var handlers = {
   'confirm-delete-employee-submit': function(){
     var id = ui.modalData.empId;
     ui.modal = null;
-    persist(function(s){
-      s.employees = s.employees.filter(function(x){ return x.id !== id; });
-      delete s.entries[id];
-    }, { successMsg: 'Employee deleted' });
-  },
-  'toggle-passcode-reveal': function(el){
-    var id = el.dataset.id;
-    ui.revealedPasscodes[id] = !ui.revealedPasscodes[id];
-    render();
+    apiPersist('delete-employee', { token: session.token, employeeId: id },
+      function(s){
+        s.employees = s.employees.filter(function(x){ return x.id !== id; });
+        delete s.entries[id];
+      },
+      { successMsg: 'Employee deleted' });
   },
   'reset-employee-passcode': function(el){
     ui.modal = 'resetPasscodeConfirm'; ui.modalData = { empId: el.dataset.id }; render();
@@ -2476,11 +2627,12 @@ var handlers = {
   'reset-employee-passcode-submit': function(){
     var empId = ui.modalData.empId;
     ui.modal = null;
-    delete ui.revealedPasscodes[empId];
-    persist(function(s){
-      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
-      if(e) e.passcode = null;
-    }, { successMsg: 'Passcode reset' });
+    apiPersist('reset-employee-passcode', { token: session.token, employeeId: empId },
+      function(s){
+        var e = s.employees.filter(function(x){ return x.id === empId; })[0];
+        if(e) e.passcodeSet = false;
+      },
+      { successMsg: 'Passcode reset' });
   },
   'add-admin-open': function(){ ui.modal = 'addAdmin'; render(); },
   'add-admin-submit': function(){
@@ -2489,11 +2641,13 @@ var handlers = {
     if(!name){ toast('Please enter a name.', 'error'); return; }
     if(STATE.admins.indexOf(name) !== -1){ toast('That person is already an admin.', 'error'); return; }
     ui.modal = null;
-    persist(function(s){
-      s.admins.push(name);
-      if(!s.adminEmails) s.adminEmails = {};
-      if(email) s.adminEmails[name] = email;
-    }, { successMsg: 'Admin added' });
+    apiPersist('add-admin', { token: session.token, name: name, email: email },
+      function(s){
+        s.admins.push(name);
+        if(!s.adminEmails) s.adminEmails = {};
+        if(email) s.adminEmails[name] = email;
+      },
+      { successMsg: 'Admin added' });
   },
   'edit-admin-open': function(el){
     ui.modal = 'editAdmin'; ui.modalData = { name: el.dataset.name }; render();
@@ -2502,10 +2656,12 @@ var handlers = {
     var name = ui.modalData.name;
     var email = (($('edit-admin-email')||{}).value || '').trim() || null;
     ui.modal = null;
-    persist(function(s){
-      if(!s.adminEmails) s.adminEmails = {};
-      if(email) s.adminEmails[name] = email; else delete s.adminEmails[name];
-    }, { successMsg: 'Admin updated' });
+    apiPersist('edit-admin', { token: session.token, name: name, email: email },
+      function(s){
+        if(!s.adminEmails) s.adminEmails = {};
+        if(email) s.adminEmails[name] = email; else delete s.adminEmails[name];
+      },
+      { successMsg: 'Admin updated' });
   },
   'remove-admin': function(el){
     var name = el.dataset.name;
@@ -2515,10 +2671,12 @@ var handlers = {
   'confirm-remove-admin-submit': function(){
     var name = ui.modalData.name;
     ui.modal = null;
-    persist(function(s){
-      s.admins = s.admins.filter(function(a){ return a !== name; });
-      if(s.adminEmails) delete s.adminEmails[name];
-    }, { successMsg: 'Admin removed' });
+    apiPersist('remove-admin', { token: session.token, name: name },
+      function(s){
+        s.admins = s.admins.filter(function(a){ return a !== name; });
+        if(s.adminEmails) delete s.adminEmails[name];
+      },
+      { successMsg: 'Admin removed' });
   },
   'download-emp-timesheet': function(el){
     var emp = getEmployee(el.dataset.id); if(!emp) return;
@@ -2542,10 +2700,13 @@ var handlers = {
     ui.modal = null;
     ui.modalData = {};
     if(!pending) return;
-    persist(function(s){
-      Object.keys(s).forEach(function(k){ delete s[k]; });
-      Object.keys(pending).forEach(function(k){ s[k] = pending[k]; });
-    }, { successMsg: 'Data restored from backup' });
+    callApi('restore-backup', { token: session.token, backup: pending }).then(function(data){
+      applyServerState(data);
+      toast('Data restored from backup', 'success');
+      render();
+    }).catch(function(err){
+      toast(apiErrorMessage(err), 'error');
+    });
   }
 };
 
@@ -2565,10 +2726,11 @@ if(BOOT_FATAL_NOTE){
   var bootApp = $('app');
   if(bootApp) bootApp.innerHTML = renderFatalErrorHTML(BOOT_FATAL_NOTE);
 } else {
-  render();
+  render(); // shows the loading screen (DATA_READY starts false)
   if(BOOT_RECOVERY_NOTE) toast(BOOT_RECOVERY_NOTE, 'error');
+  loadInitialData();
 }
-console.log('SDI Timesheet: ready', (STATE.employees || []).length, 'employees');
+console.log('SDI Timesheet: booting');
 })();
 
 </script>
