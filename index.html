@@ -1,0 +1,2574 @@
+<meta charset="utf-8">
+<title>SDI Timesheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  /* ============================= TOKENS ============================= */
+  :root{
+    --bg:#EEF1F2;
+    --surface:#FFFFFF;
+    --surface-2:#E4E8EA;
+    --ink:#14171A;
+    --ink-soft:#43505B;
+    --line:#D7DCDD;
+    --line-strong:#C1C8CA;
+    --accent:#2A6F97;
+    --accent-ink:#FFFFFF;
+    --accent-soft:#DCEAF2;
+    --good:#2E7D4F;
+    --good-soft:#E1F0E6;
+    --warn:#B8752A;
+    --warn-soft:#F6E9D8;
+    --bad:#B23A34;
+    --bad-soft:#F7E0DE;
+    --off:#8A94A0;
+    --off-soft:#E9ECEE;
+    --shadow: 0 1px 2px rgba(20,23,26,0.06), 0 8px 24px -12px rgba(20,23,26,0.18);
+    --header-ink:#F4F5F3;
+  }
+  /* Theme is locked to light on purpose — no dark-mode variant is defined,
+     so the page ignores the viewer's device/browser appearance setting. */
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:"IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size:15px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  h1,h2,h3,h4{
+    font-family:"Big Shoulders Display", "Arial Narrow", sans-serif;
+    font-weight:700;
+    letter-spacing:0.01em;
+    text-wrap:balance;
+    margin:0;
+    color:var(--ink);
+  }
+  .mono, .num, table td.num, .tabular{
+    font-family:"IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+    font-variant-numeric:tabular-nums;
+  }
+  a{color:var(--accent);}
+  button{font-family:inherit;}
+  ::selection{background:var(--accent-soft);}
+
+  /* ============================= LAYOUT ============================= */
+  #app{min-height:100vh;display:flex;flex-direction:column;}
+
+  .topbar{
+    background:#0C0F11;
+    color:var(--header-ink);
+    display:flex;
+    align-items:center;
+    gap:16px;
+    padding:10px 20px;
+    position:sticky; top:0; z-index:40;
+    box-shadow:var(--shadow);
+    background-image:
+      repeating-linear-gradient(0deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 28px),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.035) 0 1px, transparent 1px 28px);
+  }
+  .topbar img.logo{height:34px;display:block;}
+  .topbar .org-meta{display:flex; flex-direction:column; line-height:1.15; margin-right:auto;}
+  .topbar .org-name{font-family:"Big Shoulders Display",sans-serif; font-weight:700; font-size:18px; letter-spacing:0.02em;}
+  .topbar .org-sub{font-size:11px; letter-spacing:0.14em; text-transform:uppercase; color:#A9B3B9;}
+  .topbar .who{font-size:13px; color:#C8D0D4; display:flex; align-items:center; gap:10px;}
+  .topbar .who strong{color:#fff; font-weight:600;}
+  .btn{
+    appearance:none; border:1px solid var(--line-strong); background:var(--surface); color:var(--ink);
+    padding:8px 14px; border-radius:7px; font-size:13.5px; font-weight:600; cursor:pointer;
+    display:inline-flex; align-items:center; gap:7px; line-height:1.2;
+    transition:background .12s ease, border-color .12s ease, transform .04s ease;
+  }
+  .btn:hover{border-color:var(--accent); }
+  .btn:active{transform:translateY(1px);}
+  .btn:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px;
+  }
+  .btn-primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink);}
+  .btn-primary:hover{filter:brightness(1.06);}
+  .btn-ghost{background:transparent; border-color:transparent; color:var(--ink-soft);}
+  .btn-ghost:hover{border-color:var(--line-strong); color:var(--ink);}
+  .btn-danger{color:var(--bad); border-color:var(--bad);}
+  .btn-danger:hover{background:var(--bad-soft);}
+  .btn-sm{padding:5px 10px; font-size:12.5px; border-radius:6px;}
+  .btn[disabled]{opacity:0.5; cursor:not-allowed;}
+  .topbar-btn{background:transparent;border:1px solid rgba(255,255,255,0.22);color:#F4F5F3;}
+  .topbar-btn:hover{border-color:#fff; background:rgba(255,255,255,0.08);}
+
+  main{flex:1; width:100%; max-width:1180px; margin:0 auto; padding:28px 20px 64px;}
+  .center-wrap{flex:1; display:flex; align-items:center; justify-content:center; padding:40px 20px;}
+
+  .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow);}
+  .card-pad{padding:22px 24px;}
+  .stack{display:flex; flex-direction:column; gap:16px;}
+  .row{display:flex; align-items:center; gap:12px; flex-wrap:wrap;}
+  .grid{display:grid; gap:16px;}
+  .grid-4{grid-template-columns:repeat(4,1fr);}
+  .grid-3{grid-template-columns:repeat(3,1fr);}
+  .grid-2{grid-template-columns:repeat(2,1fr);}
+  @media (max-width:820px){ .grid-4{grid-template-columns:repeat(2,1fr);} .grid-3{grid-template-columns:repeat(2,1fr);} .grid-2{grid-template-columns:1fr;} }
+
+  .eyebrow{font-size:11.5px; text-transform:uppercase; letter-spacing:0.14em; color:var(--ink-soft); font-weight:600;}
+  .section-title{font-size:22px; margin-bottom:2px;}
+  .muted{color:var(--ink-soft);}
+  hr.hairline{border:none; border-top:1px solid var(--line); margin:0;}
+
+  .stat{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:14px 16px;}
+  .stat .stat-label{font-size:11px; text-transform:uppercase; letter-spacing:0.1em; color:var(--ink-soft); font-weight:600;}
+  .stat .stat-value{font-family:"Big Shoulders Display",sans-serif; font-size:30px; font-weight:700; margin-top:2px;}
+  .stat .stat-value.good{color:var(--good);} .stat .stat-value.warn{color:var(--warn);} .stat .stat-value.bad{color:var(--bad);}
+
+  .pill{display:inline-flex; align-items:center; gap:5px; padding:2px 9px; border-radius:99px; font-size:12px; font-weight:600; letter-spacing:0.02em;}
+  .pill-good{background:var(--good-soft); color:var(--good);}
+  .pill-warn{background:var(--warn-soft); color:var(--warn);}
+  .pill-bad{background:var(--bad-soft); color:var(--bad);}
+  .pill-off{background:var(--off-soft); color:var(--off);}
+  .pill-accent{background:var(--accent-soft); color:var(--accent);}
+
+  .table-wrap{overflow-x:auto; border:1px solid var(--line); border-radius:10px;}
+  table{width:100%; border-collapse:collapse; min-width:640px; background:var(--surface);}
+  table.compact{min-width:0;}
+  th,td{padding:9px 12px; text-align:left; border-bottom:1px solid var(--line); font-size:13.5px; white-space:nowrap;}
+  th{font-size:10.5px; text-transform:uppercase; letter-spacing:0.09em; color:var(--ink-soft); font-weight:600; background:var(--surface-2); position:sticky; top:0;}
+  tbody tr:last-child td{border-bottom:none;}
+  tbody tr:hover{background:var(--surface-2);}
+  td.num, th.num{text-align:right;}
+  tr.row-weekend td{color:var(--ink-soft);}
+  tr.row-today{outline:2px solid var(--accent); outline-offset:-2px;}
+
+  input[type="text"], input[type="password"], input[type="email"], input[type="time"], select, textarea{
+    font-family:inherit; font-size:13.5px; padding:8px 10px; border-radius:7px; border:1px solid var(--line-strong);
+    background:var(--surface); color:var(--ink); width:100%;
+  }
+  textarea{resize:vertical; min-height:70px;}
+  label.field{display:flex; flex-direction:column; gap:5px; font-size:12.5px; font-weight:600; color:var(--ink-soft);}
+  label.field span.req{color:var(--bad);}
+  label.field.autocomplete{position:relative;}
+
+  .autocomplete-results{
+    position:absolute; top:calc(100% + 4px); left:0; right:0; z-index:50;
+    background:var(--surface); border:1px solid var(--line); border-radius:9px; box-shadow:var(--shadow);
+    max-height:240px; overflow-y:auto; padding:6px;
+  }
+  .autocomplete-item{
+    display:flex; align-items:center; justify-content:space-between; gap:10px;
+    padding:9px 10px; border-radius:6px; font-size:13.5px; font-weight:500; color:var(--ink); cursor:pointer;
+  }
+  .autocomplete-item:hover, .autocomplete-item:focus{background:var(--surface-2); outline:none;}
+  .autocomplete-empty{padding:10px 10px; font-size:13px; color:var(--ink-soft);}
+
+  .tabs{display:flex; gap:4px; border-bottom:1px solid var(--line); margin-bottom:20px; flex-wrap:wrap;}
+  .tab{padding:9px 14px; font-size:13px; font-weight:600; color:var(--ink-soft); border-bottom:2px solid transparent; cursor:pointer; background:none; border-top:none; border-left:none; border-right:none;}
+  .tab:hover{color:var(--ink);}
+  .tab.active{color:var(--accent); border-bottom-color:var(--accent);}
+  .tab .count{background:var(--surface-2); border-radius:99px; padding:1px 7px; font-size:11px; margin-left:6px;}
+
+  .modal-backdrop{position:fixed; inset:0; background:rgba(12,15,17,0.5); display:flex; align-items:center; justify-content:center; padding:20px; z-index:100;}
+  .modal{background:var(--surface); border-radius:14px; max-width:480px; width:100%; box-shadow:var(--shadow); border:1px solid var(--line);}
+  .modal-head{padding:18px 22px 0;}
+  .modal-body{padding:14px 22px 22px;}
+  .modal-foot{padding:0 22px 22px; display:flex; justify-content:flex-end; gap:10px;}
+
+  .toast-wrap{position:fixed; bottom:20px; right:20px; z-index:200; display:flex; flex-direction:column; gap:8px;}
+  .toast{background:var(--ink); color:var(--bg); padding:11px 16px; border-radius:9px; font-size:13px; box-shadow:var(--shadow); max-width:320px;}
+  .toast.error{background:var(--bad);}
+  .toast.success{background:var(--good);}
+
+  .empty{text-align:center; padding:36px 20px; color:var(--ink-soft);}
+  .badge-shift{font-size:11px; padding:2px 8px; border-radius:6px; background:var(--surface-2); color:var(--ink-soft); font-weight:600; letter-spacing:0.02em;}
+  .footer-note{color:var(--ink-soft); font-size:12px; text-align:center; padding:18px 20px 8px;}
+
+  .link-btn{background:none;border:none;color:var(--accent);font-weight:600;cursor:pointer;padding:0;font-size:inherit;font-family:inherit;}
+  .divider-label{display:flex; align-items:center; gap:10px; color:var(--ink-soft); font-size:11px; text-transform:uppercase; letter-spacing:0.12em;}
+  .divider-label::before, .divider-label::after{content:""; flex:1; height:1px; background:var(--line);}
+
+  @media (prefers-reduced-motion: reduce){ *{animation:none !important; transition:none !important;} }
+</style>
+<div id="app"></div>
+<div id="toast-wrap" class="toast-wrap" aria-live="polite"></div>
+
+<script id="sdi-state" type="application/json">{"orgName": "Steel Drafting Innovations", "primaryAdmin": "Kenneth Mamuric", "adminPassword": "SDI_Admin", "admins": ["Kenneth Mamuric", "Jayne Ponferrada", "George Mamuric", "Bea Tambongco"], "employees": [{"id": "medina-christian-leurenz-yu", "name": "MEDINA, CHRISTIAN LEURENZ YU", "email": "christileurenzmedina@gmail.com", "department": "DETAILING", "position": "DETAILER/JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "AM", "shiftLabel": "10:00 AM \u2013 5:00 PM | Mon\u2013Sat", "active": true, "passcode": null}, {"id": "semitara-daryl-brent-a", "name": "SEMITARA, DARYL BRENT A.", "email": "darylbrent09@gmail.com", "department": "DETAILING", "position": "DETAILER/JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "AM", "shiftLabel": "10:00 AM \u2013 5:00 PM | Mon\u2013Sat", "active": true, "passcode": null}, {"id": "hongker-pavia-lacostales", "name": "HONGKER PAVIA LACOSTALES", "email": "hongker.lacostales@steeldrafting-innovations.com", "department": "DETAILING", "position": "MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "PM", "shiftLabel": "12:00 PM \u2013 5:00 PM | Mon\u2013Fri", "active": true, "passcode": null}, {"id": "enrique-sauro", "name": "ENRIQUE SAURO", "email": "enriquesauro02@gmail.com", "department": "DETAILING", "position": "JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "PM", "shiftLabel": "12:00 PM \u2013 5:00 PM | Mon\u2013Fri", "active": true, "passcode": null}, {"id": "david-faith", "name": "David, Faith", "email": "msfaithph@gmail.com", "department": "DETAILING", "position": "DETAILER/JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "EVE", "shiftLabel": "4:00 PM \u2013 8:00 PM | Fridays Only", "active": true, "passcode": null}, {"id": "quiap-venz", "name": "Quiap, Venz", "email": "qvenzmark08@gmail.com", "department": "DETAILING", "position": "DETAILER/JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "EVE", "shiftLabel": "4:00 PM \u2013 8:00 PM | Fridays Only", "active": true, "passcode": null}, {"id": "sanchez-carmela", "name": "Sanchez, Carmela", "email": "carmelasanchez08622@gmail.com", "department": "DETAILING", "position": "DETAILER/JR MODELER", "manager": "MAMURIC, KENNETH XAVIER ALEXIS D.", "shift": "EVE", "shiftLabel": "4:00 PM \u2013 8:00 PM | Fridays Only", "active": true, "passcode": null}], "entries": {"medina-christian-leurenz-yu": {"2026-08": {"1": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "4": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "5": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "6": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "7": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "8": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "11": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "12": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "13": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "14": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "15": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "18": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "19": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "20": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "21": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "22": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "25": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "26": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "27": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "28": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "29": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}}}, "semitara-daryl-brent-a": {"2026-08": {"1": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "4": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "5": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "6": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "7": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "8": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "11": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "12": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "13": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "14": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "15": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "18": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "19": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "20": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "21": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "22": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "25": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "26": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "27": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "28": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "29": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "P", "timeIn": "10:00", "timeOut": "17:00", "notes": null}}}, "hongker-pavia-lacostales": {"2026-08": {"1": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "4": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "5": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "6": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "7": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "8": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "11": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "12": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "13": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "14": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "15": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "18": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "19": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "20": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "21": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "22": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "25": {"status": "OFF", "timeIn": "12:00", "timeOut": "17:00", "notes": null}, "26": {"status": "P", "timeIn": "12:00", "timeOut": "17:00", "notes": null}, "27": {"status": "P", "timeIn": "12:00", "timeOut": "17:00", "notes": null}, "28": {"status": "P", "timeIn": "13:00", "timeOut": "19:30", "notes": null}, "29": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "A", "timeIn": null, "timeOut": null, "notes": null}}}, "enrique-sauro": {"2026-08": {"1": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "4": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "5": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "6": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "7": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "8": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "11": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "12": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "13": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "14": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "15": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "18": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "19": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "20": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "21": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "22": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "25": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "26": {"status": "A", "timeIn": null, "timeOut": null, "notes": null}, "27": {"status": "P", "timeIn": "12:00", "timeOut": "17:00", "notes": null}, "28": {"status": "P", "timeIn": "13:00", "timeOut": "19:30", "notes": null}, "29": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "A", "timeIn": null, "timeOut": null, "notes": null}}}, "david-faith": {"2026-08": {"1": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "4": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "5": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "6": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "7": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "8": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "11": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "12": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "13": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "14": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "15": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "18": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "19": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "20": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "21": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "22": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "25": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "26": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "27": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "29": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}}}, "quiap-venz": {"2026-08": {"1": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "4": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "5": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "6": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "7": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "8": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "11": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "12": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "13": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "14": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "15": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "18": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "19": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "20": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "21": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "22": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "25": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "26": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "27": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "29": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}}}, "sanchez-carmela": {"2026-08": {"1": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "2": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "3": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "4": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "5": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "6": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "7": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "8": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "9": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "10": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "11": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "12": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "13": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "14": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "15": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "16": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "17": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "18": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "19": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "20": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "21": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "22": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "23": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "24": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "25": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "26": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "27": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "29": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "30": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}, "31": {"status": "OFF", "timeIn": null, "timeOut": null, "notes": null}}}}, "concerns": [], "concernSeq": 1, "adminEmails": {"Kenneth Mamuric": "kenneth.mamuric@steeldrafting-innovations..com", "Jayne Ponferrada": "jayne@steeldrafting-innovations.com", "George Mamuric": "george@steeldrafting-innovations.com", "Bea Tambongco": "bea@steeldrafting-innovations.com"}}</script>
+<script id="sdi-logo" type="text/plain">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</script>
+<script id="sdi-head" type="text/plain">PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPgo8dGl0bGU+U0RJIFRpbWVzaGVldDwvdGl0bGU+CjxsaW5rIHJlbD0icHJlY29ubmVjdCIgaHJlZj0iaHR0cHM6Ly9mb250cy5nb29nbGVhcGlzLmNvbSI+CjxsaW5rIHJlbD0icHJlY29ubmVjdCIgaHJlZj0iaHR0cHM6Ly9mb250cy5nc3RhdGljLmNvbSIgY3Jvc3NvcmlnaW4+CjxsaW5rIGhyZWY9Imh0dHBzOi8vZm9udHMuZ29vZ2xlYXBpcy5jb20vY3NzMj9mYW1pbHk9QmlnK1Nob3VsZGVycytEaXNwbGF5OndnaHRANjAwOzcwMDs4MDAmZmFtaWx5PUlCTStQbGV4K1NhbnM6aXRhbCx3Z2h0QDAsNDAwOzAsNTAwOzAsNjAwOzAsNzAwOzEsNDAwJmZhbWlseT1JQk0rUGxleCtNb25vOndnaHRANDAwOzUwMDs2MDAmZGlzcGxheT1zd2FwIiByZWw9InN0eWxlc2hlZXQiPgo8c3R5bGU+CiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gVE9LRU5TID09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgOnJvb3R7CiAgICAtLWJnOiNFRUYxRjI7CiAgICAtLXN1cmZhY2U6I0ZGRkZGRjsKICAgIC0tc3VyZmFjZS0yOiNFNEU4RUE7CiAgICAtLWluazojMTQxNzFBOwogICAgLS1pbmstc29mdDojNDM1MDVCOwogICAgLS1saW5lOiNEN0RDREQ7CiAgICAtLWxpbmUtc3Ryb25nOiNDMUM4Q0E7CiAgICAtLWFjY2VudDojMkE2Rjk3OwogICAgLS1hY2NlbnQtaW5rOiNGRkZGRkY7CiAgICAtLWFjY2VudC1zb2Z0OiNEQ0VBRjI7CiAgICAtLWdvb2Q6IzJFN0Q0RjsKICAgIC0tZ29vZC1zb2Z0OiNFMUYwRTY7CiAgICAtLXdhcm46I0I4NzUyQTsKICAgIC0td2Fybi1zb2Z0OiNGNkU5RDg7CiAgICAtLWJhZDojQjIzQTM0OwogICAgLS1iYWQtc29mdDojRjdFMERFOwogICAgLS1vZmY6IzhBOTRBMDsKICAgIC0tb2ZmLXNvZnQ6I0U5RUNFRTsKICAgIC0tc2hhZG93OiAwIDFweCAycHggcmdiYSgyMCwyMywyNiwwLjA2KSwgMCA4cHggMjRweCAtMTJweCByZ2JhKDIwLDIzLDI2LDAuMTgpOwogICAgLS1oZWFkZXItaW5rOiNGNEY1RjM7CiAgfQogIC8qIFRoZW1lIGlzIGxvY2tlZCB0byBsaWdodCBvbiBwdXJwb3NlIOKAlCBubyBkYXJrLW1vZGUgdmFyaWFudCBpcyBkZWZpbmVkLAogICAgIHNvIHRoZSBwYWdlIGlnbm9yZXMgdGhlIHZpZXdlcidzIGRldmljZS9icm93c2VyIGFwcGVhcmFuY2Ugc2V0dGluZy4gKi8KCiAgKntib3gtc2l6aW5nOmJvcmRlci1ib3g7fQogIGh0bWwsYm9keXttYXJnaW46MDtwYWRkaW5nOjA7fQogIGJvZHl7CiAgICBiYWNrZ3JvdW5kOnZhcigtLWJnKTsKICAgIGNvbG9yOnZhcigtLWluayk7CiAgICBmb250LWZhbWlseToiSUJNIFBsZXggU2FucyIsIHVpLXNhbnMtc2VyaWYsIHN5c3RlbS11aSwgLWFwcGxlLXN5c3RlbSwgIlNlZ29lIFVJIiwgc2Fucy1zZXJpZjsKICAgIGZvbnQtc2l6ZToxNXB4OwogICAgbGluZS1oZWlnaHQ6MS41OwogICAgLXdlYmtpdC1mb250LXNtb290aGluZzphbnRpYWxpYXNlZDsKICB9CiAgaDEsaDIsaDMsaDR7CiAgICBmb250LWZhbWlseToiQmlnIFNob3VsZGVycyBEaXNwbGF5IiwgIkFyaWFsIE5hcnJvdyIsIHNhbnMtc2VyaWY7CiAgICBmb250LXdlaWdodDo3MDA7CiAgICBsZXR0ZXItc3BhY2luZzowLjAxZW07CiAgICB0ZXh0LXdyYXA6YmFsYW5jZTsKICAgIG1hcmdpbjowOwogICAgY29sb3I6dmFyKC0taW5rKTsKICB9CiAgLm1vbm8sIC5udW0sIHRhYmxlIHRkLm51bSwgLnRhYnVsYXJ7CiAgICBmb250LWZhbWlseToiSUJNIFBsZXggTW9ubyIsIHVpLW1vbm9zcGFjZSwgIlNGIE1vbm8iLCBtb25vc3BhY2U7CiAgICBmb250LXZhcmlhbnQtbnVtZXJpYzp0YWJ1bGFyLW51bXM7CiAgfQogIGF7Y29sb3I6dmFyKC0tYWNjZW50KTt9CiAgYnV0dG9ue2ZvbnQtZmFtaWx5OmluaGVyaXQ7fQogIDo6c2VsZWN0aW9ue2JhY2tncm91bmQ6dmFyKC0tYWNjZW50LXNvZnQpO30KCiAgLyogPT09PT09PT09PT09PT09PT09PT09PT09PT09PT0gTEFZT1VUID09PT09PT09PT09PT09PT09PT09PT09PT09PT09ICovCiAgI2FwcHttaW4taGVpZ2h0OjEwMHZoO2Rpc3BsYXk6ZmxleDtmbGV4LWRpcmVjdGlvbjpjb2x1bW47fQoKICAudG9wYmFyewogICAgYmFja2dyb3VuZDojMEMwRjExOwogICAgY29sb3I6dmFyKC0taGVhZGVyLWluayk7CiAgICBkaXNwbGF5OmZsZXg7CiAgICBhbGlnbi1pdGVtczpjZW50ZXI7CiAgICBnYXA6MTZweDsKICAgIHBhZGRpbmc6MTBweCAyMHB4OwogICAgcG9zaXRpb246c3RpY2t5OyB0b3A6MDsgei1pbmRleDo0MDsKICAgIGJveC1zaGFkb3c6dmFyKC0tc2hhZG93KTsKICAgIGJhY2tncm91bmQtaW1hZ2U6CiAgICAgIHJlcGVhdGluZy1saW5lYXItZ3JhZGllbnQoMGRlZywgcmdiYSgyNTUsMjU1LDI1NSwwLjAzNSkgMCAxcHgsIHRyYW5zcGFyZW50IDFweCAyOHB4KSwKICAgICAgcmVwZWF0aW5nLWxpbmVhci1ncmFkaWVudCg5MGRlZywgcmdiYSgyNTUsMjU1LDI1NSwwLjAzNSkgMCAxcHgsIHRyYW5zcGFyZW50IDFweCAyOHB4KTsKICB9CiAgLnRvcGJhciBpbWcubG9nb3toZWlnaHQ6MzRweDtkaXNwbGF5OmJsb2NrO30KICAudG9wYmFyIC5vcmctbWV0YXtkaXNwbGF5OmZsZXg7IGZsZXgtZGlyZWN0aW9uOmNvbHVtbjsgbGluZS1oZWlnaHQ6MS4xNTsgbWFyZ2luLXJpZ2h0OmF1dG87fQogIC50b3BiYXIgLm9yZy1uYW1le2ZvbnQtZmFtaWx5OiJCaWcgU2hvdWxkZXJzIERpc3BsYXkiLHNhbnMtc2VyaWY7IGZvbnQtd2VpZ2h0OjcwMDsgZm9udC1zaXplOjE4cHg7IGxldHRlci1zcGFjaW5nOjAuMDJlbTt9CiAgLnRvcGJhciAub3JnLXN1Yntmb250LXNpemU6MTFweDsgbGV0dGVyLXNwYWNpbmc6MC4xNGVtOyB0ZXh0LXRyYW5zZm9ybTp1cHBlcmNhc2U7IGNvbG9yOiNBOUIzQjk7fQogIC50b3BiYXIgLndob3tmb250LXNpemU6MTNweDsgY29sb3I6I0M4RDBENDsgZGlzcGxheTpmbGV4OyBhbGlnbi1pdGVtczpjZW50ZXI7IGdhcDoxMHB4O30KICAudG9wYmFyIC53aG8gc3Ryb25ne2NvbG9yOiNmZmY7IGZvbnQtd2VpZ2h0OjYwMDt9CiAgLmJ0bnsKICAgIGFwcGVhcmFuY2U6bm9uZTsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lLXN0cm9uZyk7IGJhY2tncm91bmQ6dmFyKC0tc3VyZmFjZSk7IGNvbG9yOnZhcigtLWluayk7CiAgICBwYWRkaW5nOjhweCAxNHB4OyBib3JkZXItcmFkaXVzOjdweDsgZm9udC1zaXplOjEzLjVweDsgZm9udC13ZWlnaHQ6NjAwOyBjdXJzb3I6cG9pbnRlcjsKICAgIGRpc3BsYXk6aW5saW5lLWZsZXg7IGFsaWduLWl0ZW1zOmNlbnRlcjsgZ2FwOjdweDsgbGluZS1oZWlnaHQ6MS4yOwogICAgdHJhbnNpdGlvbjpiYWNrZ3JvdW5kIC4xMnMgZWFzZSwgYm9yZGVyLWNvbG9yIC4xMnMgZWFzZSwgdHJhbnNmb3JtIC4wNHMgZWFzZTsKICB9CiAgLmJ0bjpob3Zlcntib3JkZXItY29sb3I6dmFyKC0tYWNjZW50KTsgfQogIC5idG46YWN0aXZle3RyYW5zZm9ybTp0cmFuc2xhdGVZKDFweCk7fQogIC5idG46Zm9jdXMtdmlzaWJsZSwgYTpmb2N1cy12aXNpYmxlLCBpbnB1dDpmb2N1cy12aXNpYmxlLCBzZWxlY3Q6Zm9jdXMtdmlzaWJsZSwgdGV4dGFyZWE6Zm9jdXMtdmlzaWJsZXsKICAgIG91dGxpbmU6MnB4IHNvbGlkIHZhcigtLWFjY2VudCk7IG91dGxpbmUtb2Zmc2V0OjJweDsKICB9CiAgLmJ0bi1wcmltYXJ5e2JhY2tncm91bmQ6dmFyKC0tYWNjZW50KTsgYm9yZGVyLWNvbG9yOnZhcigtLWFjY2VudCk7IGNvbG9yOnZhcigtLWFjY2VudC1pbmspO30KICAuYnRuLXByaW1hcnk6aG92ZXJ7ZmlsdGVyOmJyaWdodG5lc3MoMS4wNik7fQogIC5idG4tZ2hvc3R7YmFja2dyb3VuZDp0cmFuc3BhcmVudDsgYm9yZGVyLWNvbG9yOnRyYW5zcGFyZW50OyBjb2xvcjp2YXIoLS1pbmstc29mdCk7fQogIC5idG4tZ2hvc3Q6aG92ZXJ7Ym9yZGVyLWNvbG9yOnZhcigtLWxpbmUtc3Ryb25nKTsgY29sb3I6dmFyKC0taW5rKTt9CiAgLmJ0bi1kYW5nZXJ7Y29sb3I6dmFyKC0tYmFkKTsgYm9yZGVyLWNvbG9yOnZhcigtLWJhZCk7fQogIC5idG4tZGFuZ2VyOmhvdmVye2JhY2tncm91bmQ6dmFyKC0tYmFkLXNvZnQpO30KICAuYnRuLXNte3BhZGRpbmc6NXB4IDEwcHg7IGZvbnQtc2l6ZToxMi41cHg7IGJvcmRlci1yYWRpdXM6NnB4O30KICAuYnRuW2Rpc2FibGVkXXtvcGFjaXR5OjAuNTsgY3Vyc29yOm5vdC1hbGxvd2VkO30KICAudG9wYmFyLWJ0bntiYWNrZ3JvdW5kOnRyYW5zcGFyZW50O2JvcmRlcjoxcHggc29saWQgcmdiYSgyNTUsMjU1LDI1NSwwLjIyKTtjb2xvcjojRjRGNUYzO30KICAudG9wYmFyLWJ0bjpob3Zlcntib3JkZXItY29sb3I6I2ZmZjsgYmFja2dyb3VuZDpyZ2JhKDI1NSwyNTUsMjU1LDAuMDgpO30KCiAgbWFpbntmbGV4OjE7IHdpZHRoOjEwMCU7IG1heC13aWR0aDoxMTgwcHg7IG1hcmdpbjowIGF1dG87IHBhZGRpbmc6MjhweCAyMHB4IDY0cHg7fQogIC5jZW50ZXItd3JhcHtmbGV4OjE7IGRpc3BsYXk6ZmxleDsgYWxpZ24taXRlbXM6Y2VudGVyOyBqdXN0aWZ5LWNvbnRlbnQ6Y2VudGVyOyBwYWRkaW5nOjQwcHggMjBweDt9CgogIC5jYXJke2JhY2tncm91bmQ6dmFyKC0tc3VyZmFjZSk7IGJvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7IGJvcmRlci1yYWRpdXM6MTJweDsgYm94LXNoYWRvdzp2YXIoLS1zaGFkb3cpO30KICAuY2FyZC1wYWR7cGFkZGluZzoyMnB4IDI0cHg7fQogIC5zdGFja3tkaXNwbGF5OmZsZXg7IGZsZXgtZGlyZWN0aW9uOmNvbHVtbjsgZ2FwOjE2cHg7fQogIC5yb3d7ZGlzcGxheTpmbGV4OyBhbGlnbi1pdGVtczpjZW50ZXI7IGdhcDoxMnB4OyBmbGV4LXdyYXA6d3JhcDt9CiAgLmdyaWR7ZGlzcGxheTpncmlkOyBnYXA6MTZweDt9CiAgLmdyaWQtNHtncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDQsMWZyKTt9CiAgLmdyaWQtM3tncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDMsMWZyKTt9CiAgLmdyaWQtMntncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDIsMWZyKTt9CiAgQG1lZGlhIChtYXgtd2lkdGg6ODIwcHgpeyAuZ3JpZC00e2dyaWQtdGVtcGxhdGUtY29sdW1uczpyZXBlYXQoMiwxZnIpO30gLmdyaWQtM3tncmlkLXRlbXBsYXRlLWNvbHVtbnM6cmVwZWF0KDIsMWZyKTt9IC5ncmlkLTJ7Z3JpZC10ZW1wbGF0ZS1jb2x1bW5zOjFmcjt9IH0KCiAgLmV5ZWJyb3d7Zm9udC1zaXplOjExLjVweDsgdGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlOyBsZXR0ZXItc3BhY2luZzowLjE0ZW07IGNvbG9yOnZhcigtLWluay1zb2Z0KTsgZm9udC13ZWlnaHQ6NjAwO30KICAuc2VjdGlvbi10aXRsZXtmb250LXNpemU6MjJweDsgbWFyZ2luLWJvdHRvbToycHg7fQogIC5tdXRlZHtjb2xvcjp2YXIoLS1pbmstc29mdCk7fQogIGhyLmhhaXJsaW5le2JvcmRlcjpub25lOyBib3JkZXItdG9wOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgbWFyZ2luOjA7fQoKICAuc3RhdHtiYWNrZ3JvdW5kOnZhcigtLXN1cmZhY2UpOyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjEwcHg7IHBhZGRpbmc6MTRweCAxNnB4O30KICAuc3RhdCAuc3RhdC1sYWJlbHtmb250LXNpemU6MTFweDsgdGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlOyBsZXR0ZXItc3BhY2luZzowLjFlbTsgY29sb3I6dmFyKC0taW5rLXNvZnQpOyBmb250LXdlaWdodDo2MDA7fQogIC5zdGF0IC5zdGF0LXZhbHVle2ZvbnQtZmFtaWx5OiJCaWcgU2hvdWxkZXJzIERpc3BsYXkiLHNhbnMtc2VyaWY7IGZvbnQtc2l6ZTozMHB4OyBmb250LXdlaWdodDo3MDA7IG1hcmdpbi10b3A6MnB4O30KICAuc3RhdCAuc3RhdC12YWx1ZS5nb29ke2NvbG9yOnZhcigtLWdvb2QpO30gLnN0YXQgLnN0YXQtdmFsdWUud2Fybntjb2xvcjp2YXIoLS13YXJuKTt9IC5zdGF0IC5zdGF0LXZhbHVlLmJhZHtjb2xvcjp2YXIoLS1iYWQpO30KCiAgLnBpbGx7ZGlzcGxheTppbmxpbmUtZmxleDsgYWxpZ24taXRlbXM6Y2VudGVyOyBnYXA6NXB4OyBwYWRkaW5nOjJweCA5cHg7IGJvcmRlci1yYWRpdXM6OTlweDsgZm9udC1zaXplOjEycHg7IGZvbnQtd2VpZ2h0OjYwMDsgbGV0dGVyLXNwYWNpbmc6MC4wMmVtO30KICAucGlsbC1nb29ke2JhY2tncm91bmQ6dmFyKC0tZ29vZC1zb2Z0KTsgY29sb3I6dmFyKC0tZ29vZCk7fQogIC5waWxsLXdhcm57YmFja2dyb3VuZDp2YXIoLS13YXJuLXNvZnQpOyBjb2xvcjp2YXIoLS13YXJuKTt9CiAgLnBpbGwtYmFke2JhY2tncm91bmQ6dmFyKC0tYmFkLXNvZnQpOyBjb2xvcjp2YXIoLS1iYWQpO30KICAucGlsbC1vZmZ7YmFja2dyb3VuZDp2YXIoLS1vZmYtc29mdCk7IGNvbG9yOnZhcigtLW9mZik7fQogIC5waWxsLWFjY2VudHtiYWNrZ3JvdW5kOnZhcigtLWFjY2VudC1zb2Z0KTsgY29sb3I6dmFyKC0tYWNjZW50KTt9CgogIC50YWJsZS13cmFwe292ZXJmbG93LXg6YXV0bzsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgYm9yZGVyLXJhZGl1czoxMHB4O30KICB0YWJsZXt3aWR0aDoxMDAlOyBib3JkZXItY29sbGFwc2U6Y29sbGFwc2U7IG1pbi13aWR0aDo2NDBweDsgYmFja2dyb3VuZDp2YXIoLS1zdXJmYWNlKTt9CiAgdGFibGUuY29tcGFjdHttaW4td2lkdGg6MDt9CiAgdGgsdGR7cGFkZGluZzo5cHggMTJweDsgdGV4dC1hbGlnbjpsZWZ0OyBib3JkZXItYm90dG9tOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgZm9udC1zaXplOjEzLjVweDsgd2hpdGUtc3BhY2U6bm93cmFwO30KICB0aHtmb250LXNpemU6MTAuNXB4OyB0ZXh0LXRyYW5zZm9ybTp1cHBlcmNhc2U7IGxldHRlci1zcGFjaW5nOjAuMDllbTsgY29sb3I6dmFyKC0taW5rLXNvZnQpOyBmb250LXdlaWdodDo2MDA7IGJhY2tncm91bmQ6dmFyKC0tc3VyZmFjZS0yKTsgcG9zaXRpb246c3RpY2t5OyB0b3A6MDt9CiAgdGJvZHkgdHI6bGFzdC1jaGlsZCB0ZHtib3JkZXItYm90dG9tOm5vbmU7fQogIHRib2R5IHRyOmhvdmVye2JhY2tncm91bmQ6dmFyKC0tc3VyZmFjZS0yKTt9CiAgdGQubnVtLCB0aC5udW17dGV4dC1hbGlnbjpyaWdodDt9CiAgdHIucm93LXdlZWtlbmQgdGR7Y29sb3I6dmFyKC0taW5rLXNvZnQpO30KICB0ci5yb3ctdG9kYXl7b3V0bGluZToycHggc29saWQgdmFyKC0tYWNjZW50KTsgb3V0bGluZS1vZmZzZXQ6LTJweDt9CgogIGlucHV0W3R5cGU9InRleHQiXSwgaW5wdXRbdHlwZT0icGFzc3dvcmQiXSwgaW5wdXRbdHlwZT0iZW1haWwiXSwgaW5wdXRbdHlwZT0idGltZSJdLCBzZWxlY3QsIHRleHRhcmVhewogICAgZm9udC1mYW1pbHk6aW5oZXJpdDsgZm9udC1zaXplOjEzLjVweDsgcGFkZGluZzo4cHggMTBweDsgYm9yZGVyLXJhZGl1czo3cHg7IGJvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZS1zdHJvbmcpOwogICAgYmFja2dyb3VuZDp2YXIoLS1zdXJmYWNlKTsgY29sb3I6dmFyKC0taW5rKTsgd2lkdGg6MTAwJTsKICB9CiAgdGV4dGFyZWF7cmVzaXplOnZlcnRpY2FsOyBtaW4taGVpZ2h0OjcwcHg7fQogIGxhYmVsLmZpZWxke2Rpc3BsYXk6ZmxleDsgZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6NXB4OyBmb250LXNpemU6MTIuNXB4OyBmb250LXdlaWdodDo2MDA7IGNvbG9yOnZhcigtLWluay1zb2Z0KTt9CiAgbGFiZWwuZmllbGQgc3Bhbi5yZXF7Y29sb3I6dmFyKC0tYmFkKTt9CiAgbGFiZWwuZmllbGQuYXV0b2NvbXBsZXRle3Bvc2l0aW9uOnJlbGF0aXZlO30KCiAgLmF1dG9jb21wbGV0ZS1yZXN1bHRzewogICAgcG9zaXRpb246YWJzb2x1dGU7IHRvcDpjYWxjKDEwMCUgKyA0cHgpOyBsZWZ0OjA7IHJpZ2h0OjA7IHotaW5kZXg6NTA7CiAgICBiYWNrZ3JvdW5kOnZhcigtLXN1cmZhY2UpOyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjlweDsgYm94LXNoYWRvdzp2YXIoLS1zaGFkb3cpOwogICAgbWF4LWhlaWdodDoyNDBweDsgb3ZlcmZsb3cteTphdXRvOyBwYWRkaW5nOjZweDsKICB9CiAgLmF1dG9jb21wbGV0ZS1pdGVtewogICAgZGlzcGxheTpmbGV4OyBhbGlnbi1pdGVtczpjZW50ZXI7IGp1c3RpZnktY29udGVudDpzcGFjZS1iZXR3ZWVuOyBnYXA6MTBweDsKICAgIHBhZGRpbmc6OXB4IDEwcHg7IGJvcmRlci1yYWRpdXM6NnB4OyBmb250LXNpemU6MTMuNXB4OyBmb250LXdlaWdodDo1MDA7IGNvbG9yOnZhcigtLWluayk7IGN1cnNvcjpwb2ludGVyOwogIH0KICAuYXV0b2NvbXBsZXRlLWl0ZW06aG92ZXIsIC5hdXRvY29tcGxldGUtaXRlbTpmb2N1c3tiYWNrZ3JvdW5kOnZhcigtLXN1cmZhY2UtMik7IG91dGxpbmU6bm9uZTt9CiAgLmF1dG9jb21wbGV0ZS1lbXB0eXtwYWRkaW5nOjEwcHggMTBweDsgZm9udC1zaXplOjEzcHg7IGNvbG9yOnZhcigtLWluay1zb2Z0KTt9CgogIC50YWJze2Rpc3BsYXk6ZmxleDsgZ2FwOjRweDsgYm9yZGVyLWJvdHRvbToxcHggc29saWQgdmFyKC0tbGluZSk7IG1hcmdpbi1ib3R0b206MjBweDsgZmxleC13cmFwOndyYXA7fQogIC50YWJ7cGFkZGluZzo5cHggMTRweDsgZm9udC1zaXplOjEzcHg7IGZvbnQtd2VpZ2h0OjYwMDsgY29sb3I6dmFyKC0taW5rLXNvZnQpOyBib3JkZXItYm90dG9tOjJweCBzb2xpZCB0cmFuc3BhcmVudDsgY3Vyc29yOnBvaW50ZXI7IGJhY2tncm91bmQ6bm9uZTsgYm9yZGVyLXRvcDpub25lOyBib3JkZXItbGVmdDpub25lOyBib3JkZXItcmlnaHQ6bm9uZTt9CiAgLnRhYjpob3Zlcntjb2xvcjp2YXIoLS1pbmspO30KICAudGFiLmFjdGl2ZXtjb2xvcjp2YXIoLS1hY2NlbnQpOyBib3JkZXItYm90dG9tLWNvbG9yOnZhcigtLWFjY2VudCk7fQogIC50YWIgLmNvdW50e2JhY2tncm91bmQ6dmFyKC0tc3VyZmFjZS0yKTsgYm9yZGVyLXJhZGl1czo5OXB4OyBwYWRkaW5nOjFweCA3cHg7IGZvbnQtc2l6ZToxMXB4OyBtYXJnaW4tbGVmdDo2cHg7fQoKICAubW9kYWwtYmFja2Ryb3B7cG9zaXRpb246Zml4ZWQ7IGluc2V0OjA7IGJhY2tncm91bmQ6cmdiYSgxMiwxNSwxNywwLjUpOyBkaXNwbGF5OmZsZXg7IGFsaWduLWl0ZW1zOmNlbnRlcjsganVzdGlmeS1jb250ZW50OmNlbnRlcjsgcGFkZGluZzoyMHB4OyB6LWluZGV4OjEwMDt9CiAgLm1vZGFse2JhY2tncm91bmQ6dmFyKC0tc3VyZmFjZSk7IGJvcmRlci1yYWRpdXM6MTRweDsgbWF4LXdpZHRoOjQ4MHB4OyB3aWR0aDoxMDAlOyBib3gtc2hhZG93OnZhcigtLXNoYWRvdyk7IGJvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7fQogIC5tb2RhbC1oZWFke3BhZGRpbmc6MThweCAyMnB4IDA7fQogIC5tb2RhbC1ib2R5e3BhZGRpbmc6MTRweCAyMnB4IDIycHg7fQogIC5tb2RhbC1mb290e3BhZGRpbmc6MCAyMnB4IDIycHg7IGRpc3BsYXk6ZmxleDsganVzdGlmeS1jb250ZW50OmZsZXgtZW5kOyBnYXA6MTBweDt9CgogIC50b2FzdC13cmFwe3Bvc2l0aW9uOmZpeGVkOyBib3R0b206MjBweDsgcmlnaHQ6MjBweDsgei1pbmRleDoyMDA7IGRpc3BsYXk6ZmxleDsgZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6OHB4O30KICAudG9hc3R7YmFja2dyb3VuZDp2YXIoLS1pbmspOyBjb2xvcjp2YXIoLS1iZyk7IHBhZGRpbmc6MTFweCAxNnB4OyBib3JkZXItcmFkaXVzOjlweDsgZm9udC1zaXplOjEzcHg7IGJveC1zaGFkb3c6dmFyKC0tc2hhZG93KTsgbWF4LXdpZHRoOjMyMHB4O30KICAudG9hc3QuZXJyb3J7YmFja2dyb3VuZDp2YXIoLS1iYWQpO30KICAudG9hc3Quc3VjY2Vzc3tiYWNrZ3JvdW5kOnZhcigtLWdvb2QpO30KCiAgLmVtcHR5e3RleHQtYWxpZ246Y2VudGVyOyBwYWRkaW5nOjM2cHggMjBweDsgY29sb3I6dmFyKC0taW5rLXNvZnQpO30KICAuYmFkZ2Utc2hpZnR7Zm9udC1zaXplOjExcHg7IHBhZGRpbmc6MnB4IDhweDsgYm9yZGVyLXJhZGl1czo2cHg7IGJhY2tncm91bmQ6dmFyKC0tc3VyZmFjZS0yKTsgY29sb3I6dmFyKC0taW5rLXNvZnQpOyBmb250LXdlaWdodDo2MDA7IGxldHRlci1zcGFjaW5nOjAuMDJlbTt9CiAgLmZvb3Rlci1ub3Rle2NvbG9yOnZhcigtLWluay1zb2Z0KTsgZm9udC1zaXplOjEycHg7IHRleHQtYWxpZ246Y2VudGVyOyBwYWRkaW5nOjE4cHggMjBweCA4cHg7fQoKICAubGluay1idG57YmFja2dyb3VuZDpub25lO2JvcmRlcjpub25lO2NvbG9yOnZhcigtLWFjY2VudCk7Zm9udC13ZWlnaHQ6NjAwO2N1cnNvcjpwb2ludGVyO3BhZGRpbmc6MDtmb250LXNpemU6aW5oZXJpdDtmb250LWZhbWlseTppbmhlcml0O30KICAuZGl2aWRlci1sYWJlbHtkaXNwbGF5OmZsZXg7IGFsaWduLWl0ZW1zOmNlbnRlcjsgZ2FwOjEwcHg7IGNvbG9yOnZhcigtLWluay1zb2Z0KTsgZm9udC1zaXplOjExcHg7IHRleHQtdHJhbnNmb3JtOnVwcGVyY2FzZTsgbGV0dGVyLXNwYWNpbmc6MC4xMmVtO30KICAuZGl2aWRlci1sYWJlbDo6YmVmb3JlLCAuZGl2aWRlci1sYWJlbDo6YWZ0ZXJ7Y29udGVudDoiIjsgZmxleDoxOyBoZWlnaHQ6MXB4OyBiYWNrZ3JvdW5kOnZhcigtLWxpbmUpO30KCiAgQG1lZGlhIChwcmVmZXJzLXJlZHVjZWQtbW90aW9uOiByZWR1Y2UpeyAqe2FuaW1hdGlvbjpub25lICFpbXBvcnRhbnQ7IHRyYW5zaXRpb246bm9uZSAhaW1wb3J0YW50O30gfQo8L3N0eWxlPjwvaGVhZD4=</script>
+<script id="sdi-app">
+(function(){
+"use strict";
+
+/* ============================================================
+   BOOTSTRAP: read embedded state + logo, capture static shell
+
+   This is deliberately defensive. If the page's own embedded data ever
+   fails to parse (a bad publish, a platform hiccup, anything), the old
+   behavior was a silent, totally blank page — nothing rendered, no error,
+   nothing to act on. Instead: try this browser's last locally-saved
+   backup, and only if that's also unavailable, show a clear "couldn't
+   load" screen with a reload button instead of leaving a dead white page.
+   ============================================================ */
+var LOCAL_STATE_KEY = 'sdi_timesheet_local_state_v1';
+var BOOT_RECOVERY_NOTE = null;
+var BOOT_FATAL_NOTE = null;
+/* True only when there's no claude.ai host at all (a self-hosted copy of
+   this file opened directly in a plain browser). Used to decide whether a
+   Blob/<a download> fallback is safe to use for CSV exports: inside the
+   claude.ai artifact viewer that kind of script-driven download is sandboxed
+   and silently does nothing, so it must never be tried there — only here,
+   in a real unsandboxed browser, does it actually work. */
+var SELF_HOSTED = !window.claude || typeof window.claude.use !== 'function';
+
+/* ============================================================
+   CLOCK-TAMPER GUARD for employee Time In / Time Out punches
+
+   Punch stamps always use the actual "now" read from the device clock —
+   there's never a field where an employee types a time in themselves, only
+   the admin's Edit Entries can set an arbitrary time. The remaining way to
+   cheat is changing the device's system clock right before punching. This
+   app has no backend of its own, and the claude.ai artifact sandbox blocks
+   fetching a trusted time source from an outside server (only a short CDN
+   allowlist is reachable), so there's no way to independently verify wall
+   time the way a real server-side clock would. What CAN be checked: the
+   monotonic performance clock (performance.now()) ticks at the real
+   hardware rate no matter what the OS wall clock is set to, so pairing one
+   wall-clock reading with a monotonic reading right when the page loads,
+   then comparing them again at punch time, catches someone changing the
+   system clock *while this tab is already open*. It can't catch a clock
+   that was already wrong before the page was loaded — that's a hard limit
+   of a client-only app, not something this check papers over. */
+var CLOCK_ANCHOR_WALL_MS = Date.now();
+var CLOCK_ANCHOR_MONO_MS = (window.performance && typeof performance.now === 'function') ? performance.now() : null;
+var CLOCK_TAMPER_TOLERANCE_MS = 5000; // slack for normal JS/render/click delay
+function clockLooksTampered(){
+  if(CLOCK_ANCHOR_MONO_MS === null) return false; // no monotonic clock available — can't check, don't block
+  var expectedWallMs = CLOCK_ANCHOR_WALL_MS + (performance.now() - CLOCK_ANCHOR_MONO_MS);
+  return Math.abs(Date.now() - expectedWallMs) > CLOCK_TAMPER_TOLERANCE_MS;
+}
+
+function readLocalBackupState(){
+  var raw = window.localStorage && localStorage.getItem(LOCAL_STATE_KEY);
+  if(!raw) return null;
+  var parsed = JSON.parse(raw);
+  if(parsed && parsed.employees && parsed.entries) return parsed;
+  return null;
+}
+
+var STATE;
+try{
+  var stateEl = document.getElementById('sdi-state');
+  if(!stateEl) throw new Error('sdi-state element missing');
+  STATE = JSON.parse(stateEl.textContent);
+}catch(primaryErr){
+  console.error('SDI Timesheet: embedded data failed to load', primaryErr);
+  try{
+    var backup = readLocalBackupState();
+    if(backup){
+      STATE = backup;
+      BOOT_RECOVERY_NOTE = 'Loaded your last locally-saved data after a problem reading this page’s data.';
+    } else {
+      BOOT_FATAL_NOTE = 'This page’s data didn’t load, and there’s no local backup to recover from on this device.';
+    }
+  }catch(backupErr){
+    console.error('SDI Timesheet: local backup also failed to load', backupErr);
+    BOOT_FATAL_NOTE = 'This page’s data didn’t load, and there’s no local backup to recover from on this device.';
+  }
+}
+// Even in the fatal case, keep STATE a well-formed (empty) object so any
+// code that runs before the fatal screen replaces #app (toast(), etc.)
+// doesn't itself throw on a missing field.
+if(!STATE || typeof STATE !== 'object'){
+  STATE = { orgName: 'Steel Drafting Innovations', primaryAdmin: null, adminPassword: null, admins: [], adminEmails: {}, employees: [], entries: {}, concerns: [], concernSeq: 1 };
+}
+// Admins are stored as plain name strings (used directly for session/login
+// checks throughout), with an optional email kept separately keyed by name
+// — so older embedded/backup data missing this field just gets it filled
+// in empty rather than needing every STATE.admins usage rewritten.
+if(!STATE.adminEmails || typeof STATE.adminEmails !== 'object'){ STATE.adminEmails = {}; }
+
+var LOGO_B64 = '';
+try{ LOGO_B64 = document.getElementById('sdi-logo').textContent.trim(); }catch(logoErr){ console.error('SDI Timesheet: logo failed to load', logoErr); }
+var LOGO_SRC = LOGO_B64 ? ("data:image/png;base64," + LOGO_B64) : '';
+
+/* The page's <head> (fonts + the entire CSS) is read from a dedicated,
+   body-placed data block (#sdi-head) rather than from the live
+   document.head. This is deliberate and is the fix for a real failure:
+   one edit on the live site previously caused every bit of styling to
+   disappear, because the reconstruction used to read document.head
+   straight from the running page. If the hosting page ever reshapes,
+   strips, or otherwise doesn't preserve <head> exactly as published —
+   for any reason, platform or otherwise — that captured copy silently
+   becomes the new "correct" head, and every future save re-publishes
+   that same broken head forever, compounding.
+
+   Reading from #sdi-head instead breaks that loop: it's a plain data
+   block (proven, by the same pattern already used for state/logo, to
+   round-trip through a publish untouched), so every save always
+   reconstructs the exact head this app shipped with — never a
+   possibly-degraded live copy. */
+function b64ToUtf8(b64){
+  var bytes = Uint8Array.from(atob(b64), function(c){ return c.charCodeAt(0); });
+  return new TextDecoder('utf-8').decode(bytes);
+}
+function utf8ToB64(str){
+  var bytes = new TextEncoder().encode(str);
+  var bin = '';
+  for(var i=0;i<bytes.length;i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+var HEAD_HTML, HEAD_SCRIPT_OUTER;
+try{
+  var headEl = document.getElementById('sdi-head');
+  if(!headEl) throw new Error('sdi-head element missing');
+  HEAD_HTML = b64ToUtf8(headEl.textContent.trim());
+  HEAD_SCRIPT_OUTER = headEl.outerHTML;
+}catch(headErr){
+  // Last resort only — reachable if #sdi-head itself is somehow missing.
+  // Falls back to whatever the live head currently is (better than
+  // throwing), and re-derives a fresh #sdi-head block from it so the
+  // self-healing copy exists again from this save onward.
+  console.error('SDI Timesheet: baked-in head data missing, falling back to the live <head>', headErr);
+  HEAD_HTML = document.head.outerHTML;
+  try{
+    HEAD_SCRIPT_OUTER = '<script id="sdi-head" type="text/plain">' + utf8ToB64(HEAD_HTML) + '<' + '/script>';
+  }catch(reencodeErr){
+    HEAD_SCRIPT_OUTER = '<script id="sdi-head" type="text/plain"><' + '/script>';
+  }
+}
+
+// Captured once, before any mutation, so we can reconstruct the full
+// document on publish without serializing the live (mutated) DOM.
+var STATE_SCRIPT_OPEN = '<script id="sdi-state" type="application/json">';
+var LOGO_SCRIPT_OUTER = document.getElementById('sdi-logo').outerHTML;
+var APP_SCRIPT_OUTER = document.getElementById('sdi-app').outerHTML;
+
+function buildFullDocument(state){
+  var json = JSON.stringify(state).replace(/</g, '\\u003c');
+  return '<!doctype html>\n<html lang="en">\n' + HEAD_HTML + '\n<body>\n' +
+    '<div id="app"></div>\n<div id="toast-wrap" class="toast-wrap" aria-live="polite"></div>\n' +
+    STATE_SCRIPT_OPEN + json + '<' + '/script>\n' +
+    LOGO_SCRIPT_OUTER + '\n' + HEAD_SCRIPT_OUTER + '\n' + APP_SCRIPT_OUTER + '\n</body>\n</html>';
+}
+
+/* ============================================================
+   SESSION (per-tab; survives the reload publish() triggers)
+   ============================================================ */
+var session = { role: null, employeeId: null, adminName: null };
+try{
+  var saved = sessionStorage.getItem('sdi_session');
+  if(saved) session = JSON.parse(saved);
+}catch(e){}
+
+function saveSession(){
+  try{ sessionStorage.setItem('sdi_session', JSON.stringify(session)); }catch(e){}
+}
+
+/* ============================================================
+   UI STATE (per-tab; survives the reload publish() triggers)
+   ------------------------------------------------------------
+   Every successful save republishes the whole document, and — per the
+   artifact platform's own contract — that reload happens for every open
+   view, this one included; there's no capability flag to opt this view
+   out of it (see "How it works" in the docs). What IS in this app's
+   control is what the admin sees when that reload lands: previously
+   ui (adminTab, which employee/month was open, etc.) was plain in-memory
+   state, so a save silently dumped the admin back to Overview with
+   nothing selected. Mirroring the handful of fields below into
+   sessionStorage (same mechanism session already uses) means a save
+   instead lands back on the same tab, same employee, same month —
+   the reload still happens, but it no longer feels like losing your
+   place. Restored once at boot, saved right before every publish. */
+var UI_STATE_KEYS = ['adminTab', 'adminEmpId', 'adminMonth', 'employeeMonth', 'overviewShift', 'concernFilter', 'peopleSort'];
+function restoreUiState(target){
+  try{
+    var saved = sessionStorage.getItem('sdi_ui');
+    if(!saved) return;
+    var parsed = JSON.parse(saved);
+    UI_STATE_KEYS.forEach(function(k){
+      if(Object.prototype.hasOwnProperty.call(parsed, k)) target[k] = parsed[k];
+    });
+  }catch(e){}
+}
+function saveUiState(){
+  try{
+    var out = {};
+    UI_STATE_KEYS.forEach(function(k){ out[k] = ui[k]; });
+    sessionStorage.setItem('sdi_ui', JSON.stringify(out));
+  }catch(e){}
+}
+
+/* ============================================================
+   CAPABILITIES
+   ============================================================ */
+var artifactCap = null;
+var downloadsCap = null;
+var canWrite = true; // optimistic until first not_writer/not_granted rejection
+var capsReady = false;
+
+/* Outside claude.ai (a self-hosted copy of this file, opened directly, etc.)
+   there is no shared document to publish to. So this page falls back to
+   saving into the browser's own localStorage — durable across reloads on
+   THIS device/browser only, never synced to anyone else. Inside claude.ai,
+   artifactCap is always the source of truth, but every successful save is
+   still mirrored to this same local backup (see persist()) purely as a
+   disaster-recovery copy for the boot-time recovery above. */
+function tryLoadLocalFallback(){
+  try{
+    var backup = readLocalBackupState();
+    if(backup) STATE = backup;
+  }catch(e){ /* storage unavailable or corrupt — keep the baked-in STATE */ }
+}
+function saveLocalFallback(){
+  try{ if(window.localStorage) localStorage.setItem(LOCAL_STATE_KEY, JSON.stringify(STATE)); }catch(e){}
+}
+
+/* True while focus is inside an editable field in the app — used below so
+   the capability check's background render() can't wipe out text someone
+   is actively typing (e.g. filling in several days on Edit Entries) before
+   they've saved it. window.claude.use() always resolves asynchronously,
+   sometimes several seconds after the page is already interactive, so this
+   render can land in the middle of real typing. Skipping it there is safe:
+   canWrite/artifactCap are plain variables that persist() and every other
+   render() already read fresh, so nothing is lost by catching up on the
+   next real render instead — which fires the moment the person does
+   anything else (saves, switches tabs, etc). */
+function userIsEditing(){
+  var el = document.activeElement;
+  if(!el) return false;
+  var tag = el.tagName;
+  var app = $('app');
+  return (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') && !!app && app.contains(el);
+}
+function safeRender(){
+  if(userIsEditing()) return;
+  render();
+}
+
+(function initCaps(){
+  if(!window.claude || typeof window.claude.use !== 'function'){
+    capsReady = true;
+    canWrite = false;
+    tryLoadLocalFallback();
+    return;
+  }
+  Promise.all([
+    window.claude.use('artifact').catch(function(){ return null; }),
+    window.claude.use('downloads').catch(function(){ return null; })
+  ]).then(function(res){
+    artifactCap = res[0];
+    downloadsCap = res[1];
+    if(!artifactCap){ canWrite = false; tryLoadLocalFallback(); }
+    capsReady = true;
+    safeRender();
+  });
+  // Safety timeout matches the platform's own ~10s resolution window.
+  setTimeout(function(){ if(!capsReady){ capsReady = true; canWrite = false; tryLoadLocalFallback(); safeRender(); } }, 10500);
+})();
+
+/* ============================================================
+   UTILITIES
+   ============================================================ */
+function $(id){ return document.getElementById(id); }
+function esc(s){
+  if(s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, function(c){
+    return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c];
+  });
+}
+function uid(prefix){ return prefix + '_' + Math.random().toString(36).slice(2,9) + Date.now().toString(36).slice(-4); }
+function slugify(name){ return String(name).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,''); }
+function pad2(n){ return n < 10 ? '0'+n : ''+n; }
+
+var MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+/* Contact address shown to a deactivated employee who tries to log in, and
+   to admins in the People & Access help text. Kenneth asked for this exact
+   address specifically, rather than whoever currently holds the primary
+   admin slot, so it's a fixed constant rather than derived from STATE. */
+var REACTIVATION_EMAIL = 'kenneth.mamuric@steeldrafting-innovations.com';
+var WEEKDAY_SHORT = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
+var WEEKDAY_LONG = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+
+function monthInfo(monthStr){
+  var parts = monthStr.split('-');
+  var y = parseInt(parts[0],10), m = parseInt(parts[1],10);
+  var days = new Date(y, m, 0).getDate();
+  return { year: y, month: m, daysInMonth: days };
+}
+function dateForDay(monthStr, day){
+  var mi = monthInfo(monthStr);
+  return new Date(mi.year, mi.month - 1, day);
+}
+function weekdayShort(monthStr, day){ return WEEKDAY_SHORT[dateForDay(monthStr, day).getDay()]; }
+function weekdayLong(monthStr, day){ return WEEKDAY_LONG[dateForDay(monthStr, day).getDay()]; }
+function isWeekend(monthStr, day){ var d = dateForDay(monthStr, day).getDay(); return d === 0; }
+/* Matches the shift schedules from the official attendance-schedule
+   template: AM works Mon–Sat, PM works Mon–Fri, EVE works Fridays only.
+   Used so exports can mark a day "OFF" (outside that shift's schedule)
+   the same way the template does, instead of just leaving it blank. */
+function isShiftWorkDay(shift, monthStr, day){
+  var dow = dateForDay(monthStr, day).getDay(); // 0=Sun..6=Sat
+  if(shift === 'AM') return dow !== 0;
+  if(shift === 'PM') return dow >= 1 && dow <= 5;
+  if(shift === 'EVE') return dow === 5;
+  return true;
+}
+function fmtDateShort(monthStr, day){
+  var mi = monthInfo(monthStr);
+  return MONTH_NAMES[mi.month-1].slice(0,3) + ' ' + day;
+}
+function todayDayNum(monthStr){
+  var now = new Date();
+  var mi = monthInfo(monthStr);
+  if(now.getFullYear() === mi.year && (now.getMonth()+1) === mi.month) return now.getDate();
+  return -1;
+}
+
+/* The app has no fixed "current month" baked in — it always rolls forward
+   with the real calendar. currentMonthKey() reads the live date, so the
+   period on screen advances on its own every month with no admin action. */
+function currentMonthKey(){
+  var d = new Date();
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+}
+function monthKeyLabel(monthKey){
+  var mi = monthInfo(monthKey);
+  return MONTH_NAMES[mi.month - 1] + ' ' + mi.year;
+}
+function shiftMonthKey(monthKey, delta){
+  var mi = monthInfo(monthKey);
+  var d = new Date(mi.year, (mi.month - 1) + delta, 1);
+  return d.getFullYear() + '-' + pad2(d.getMonth() + 1);
+}
+
+/* Time helpers: "HH:MM" 24h strings */
+function timeToMinutes(t){
+  if(!t) return null;
+  var parts = t.split(':');
+  if(parts.length < 2) return null;
+  var h = parseInt(parts[0],10), m = parseInt(parts[1],10);
+  if(isNaN(h) || isNaN(m)) return null;
+  return h*60+m;
+}
+function computeHours(timeIn, timeOut){
+  var a = timeToMinutes(timeIn), b = timeToMinutes(timeOut);
+  if(a === null || b === null) return { total:null, reg:null, ot:null };
+  var diff = b - a;
+  if(diff < 0) diff += 24*60; // overnight guard, mirrors Excel MOD()
+  var total = Math.round((diff/60) * 100) / 100;
+  var reg = Math.min(total, 8);
+  var ot = Math.max(total - 8, 0);
+  return { total: total, reg: Math.round(reg*100)/100, ot: Math.round(ot*100)/100 };
+}
+function fmtHrs(n){ return (n === null || n === undefined) ? '—' : n.toFixed(2); }
+function nowTimeHHMM(){
+  var d = new Date();
+  return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+}
+function fmtTime12(t){
+  if(!t) return '—';
+  var mins = timeToMinutes(t);
+  if(mins === null) return '—';
+  var h = Math.floor(mins/60), m = mins%60;
+  var ap = h >= 12 ? 'PM' : 'AM';
+  var h12 = h % 12; if(h12 === 0) h12 = 12;
+  return h12 + ':' + pad2(m) + ' ' + ap;
+}
+
+/* ============================================================
+   DATA ACCESSORS
+   ============================================================ */
+function getEmployee(id){
+  for(var i=0;i<STATE.employees.length;i++){ if(STATE.employees[i].id === id) return STATE.employees[i]; }
+  return null;
+}
+function activeEmployees(){ return STATE.employees.filter(function(e){ return e.active; }); }
+/* Entries are namespaced by month key so the same day-of-month number in
+   two different months never collides: entries[empId][monthKey][day]. */
+function getEntry(empId, monthKey, day){
+  var e = STATE.entries[empId];
+  if(!e) return null;
+  var m = e[monthKey];
+  if(!m) return null;
+  return m[String(day)] || null;
+}
+function setEntry(empId, monthKey, day, patch){
+  if(!STATE.entries[empId]) STATE.entries[empId] = {};
+  if(!STATE.entries[empId][monthKey]) STATE.entries[empId][monthKey] = {};
+  var cur = STATE.entries[empId][monthKey][String(day)] || { status:null, timeIn:null, timeOut:null, notes:null };
+  var next = Object.assign({}, cur, patch);
+  STATE.entries[empId][monthKey][String(day)] = next;
+}
+function monthTotals(empId, monthKey){
+  var mi = monthInfo(monthKey);
+  var daysPresent=0, daysAbsent=0, totalHrs=0, regHrs=0, otHrs=0;
+  for(var d=1; d<=mi.daysInMonth; d++){
+    var entry = getEntry(empId, monthKey, d);
+    if(!entry) continue;
+    if(entry.status === 'P') daysPresent++;
+    if(entry.status === 'A') daysAbsent++;
+    var h = computeHours(entry.timeIn, entry.timeOut);
+    if(h.total !== null){ totalHrs += h.total; regHrs += h.reg; otHrs += h.ot; }
+  }
+  return {
+    daysPresent: daysPresent, daysAbsent: daysAbsent,
+    totalHrs: Math.round(totalHrs*100)/100, regHrs: Math.round(regHrs*100)/100, otHrs: Math.round(otHrs*100)/100
+  };
+}
+function openConcernsFor(empId){
+  return STATE.concerns.filter(function(c){ return c.empId === empId && c.status === 'open'; });
+}
+function allOpenConcerns(){
+  return STATE.concerns.filter(function(c){ return c.status === 'open'; }).sort(function(a,b){ return b.submittedAt.localeCompare(a.submittedAt); });
+}
+
+/* ============================================================
+   TOASTS
+   ============================================================ */
+function toast(msg, kind){
+  var wrap = $('toast-wrap');
+  if(!wrap) return;
+  var el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = msg;
+  wrap.appendChild(el);
+  setTimeout(function(){ el.remove(); }, kind === 'error' ? 5200 : 3400);
+}
+
+/* ============================================================
+   PERSIST: mutate STATE, then try to publish the new document.
+   ============================================================ */
+var publishing = false;
+function persist(mutateFn, opts){
+  opts = opts || {};
+  var snapshot = JSON.parse(JSON.stringify(STATE));
+  try{
+    mutateFn(STATE);
+  }catch(err){
+    console.error('mutation failed', err);
+    toast('Something went wrong making that change.', 'error');
+    return Promise.resolve(false);
+  }
+  render(); // optimistic UI
+
+  // Mirror every successful change to this browser's local storage — even
+  // when the live claude.ai save below is what actually matters. This is
+  // a silent disaster-recovery copy: if this page's own embedded data ever
+  // fails to load on a future visit, boot falls back to this instead of
+  // going blank. Never shown to the user, never a substitute for the real
+  // save when artifactCap exists.
+  saveLocalFallback();
+
+  if(!artifactCap){
+    // No live capability (viewing outside claude.ai, or unsupported host):
+    // the local save above IS the persistence here, so be honest about it.
+    toast((opts.successMsg || 'Saved') + ' — saved to this browser only, not synced to other viewers.', 'success');
+    return Promise.resolve(true);
+  }
+
+  publishing = true;
+  saveSession();
+  saveUiState();
+  var html = buildFullDocument(STATE);
+  return artifactCap.publish(html).then(function(){
+    // A successful html publish reloads this view too; nothing else to do.
+    return true;
+  }).catch(function(err){
+    publishing = false;
+    var code = err && err.code;
+    if(code === 'conflict'){
+      // Routine: the shell is already reloading every view to the winner.
+      return false;
+    }
+    if(code === 'not_writer' || code === 'not_granted' || code === 'capability_disabled'){
+      canWrite = false;
+      STATE = snapshot; // revert optimistic change
+      render();
+      toast('You have view-only access to this timesheet. Ask ' + (STATE.primaryAdmin || 'the admin') + ' to share it with edit access so changes can be saved.', 'error');
+      return false;
+    }
+    STATE = snapshot;
+    render();
+    if(code === 'rate_limited'){
+      toast('Saving too fast — please wait a moment and try again.', 'error');
+    } else {
+      toast('Could not save that change (' + (code || 'error') + '). Please try again.', 'error');
+    }
+    return false;
+  });
+}
+
+/* ============================================================
+   CSV / DOWNLOADS
+   ============================================================ */
+function csvEscape(v){
+  if(v === null || v === undefined) return '';
+  var s = String(v);
+  if(/[",\n]/.test(s)) return '"' + s.replace(/"/g,'""') + '"';
+  return s;
+}
+function toCSV(rows){
+  return rows.map(function(row){ return row.map(csvEscape).join(','); }).join('\r\n');
+}
+
+var DOWNLOAD_MIME = { csv: 'text/csv;charset=utf-8;', html: 'text/html;charset=utf-8;', txt: 'text/plain;charset=utf-8;', json: 'application/json;charset=utf-8;' };
+
+/* Plain-browser fallback: a Blob + temporary <a download> click. Only used
+   when SELF_HOSTED — inside the claude.ai artifact viewer this kind of
+   script-driven download is sandboxed and does nothing, so downloadsCap
+   (the real platform capability) is the only path there. */
+function downloadViaBlob(baseName, content, ext){
+  try{
+    var blob = new Blob([content], { type: DOWNLOAD_MIME[ext] || DOWNLOAD_MIME.txt });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = baseName + '.' + ext;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+    toast('Downloaded ' + baseName + '.' + ext, 'success');
+  }catch(err){
+    toast('Couldn’t save the file in this browser.', 'error');
+  }
+}
+
+function offerDownload(baseName, content, ext){
+  ext = ext || 'csv';
+  if(!downloadsCap){
+    if(SELF_HOSTED){ downloadViaBlob(baseName, content, ext); return; }
+    toast('File downloads aren’t available in this view.', 'error');
+    return;
+  }
+  downloadsCap.save({ filename: baseName + '.' + ext, data: content }).then(function(){
+    toast('Downloaded ' + baseName + '.' + ext, 'success');
+  }).catch(function(err){
+    var code = err && err.code;
+    if(code === 'extension_not_enabled' || code === 'rejected_extension'){
+      downloadsCap.save({ filename: baseName + '.txt', data: content }).then(function(){
+        toast('Downloaded ' + baseName + '.txt', 'success');
+      }).catch(function(){
+        toast('Couldn’t save the file in this view.', 'error');
+      });
+      return;
+    }
+    if(code === 'declined') return;
+    if(code === 'too_large'){ toast('That file is too large to download here.', 'error'); return; }
+    toast('Couldn’t save the file in this view.', 'error');
+  });
+}
+
+/* Excel-openable export: a real HTML <table> with inline styles (colors,
+   borders, merged headers via colspan) that mirrors Ken's official
+   templates visually — not just column labels. Saved with a .html
+   extension (the claude.ai download capability has no .xlsx in its
+   allowlist, so a true binary Excel file can't be offered from here), but
+   both Excel and Google Sheets open an .html table natively via File →
+   Open and render the colors/borders/merges correctly — this is a common,
+   well-supported way to ship an "Excel-style" export without a server. */
+function excelHTMLDoc(title, tableHTML){
+  return '<!doctype html><html><head><meta charset="utf-8">' +
+    '<title>' + esc(title) + '</title></head>' +
+    '<body style="margin:0;padding:16px;background:#fff;">' +
+    '<table style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;">' +
+    tableHTML +
+    '</table></body></html>';
+}
+function xlTd(content, style, colspan){
+  return '<td' + (colspan?' colspan="'+colspan+'"':'') + ' style="' + style + '">' + content + '</td>';
+}
+
+/* The company-wide Summary doesn't correspond to anything in either
+   official SDI template (it's our own bonus roll-up), so there's no
+   template to match. It's still built as a styled HTML table, like every
+   other export, for a consistent look across all Downloads-tab exports —
+   see allEmployeesSummaryExcelHTML() further down, near the other
+   Excel-style exports. */
+
+/* Matches the attendance-schedule template's own section order and banner
+   wording exactly (PM, then AM, then Evening) rather than alphabetizing
+   the shift codes. */
+var ATTENDANCE_GROUP_ORDER = ['PM','AM','EVE'];
+var ATTENDANCE_GROUP_BANNER = {
+  PM:  '12:00 PM – 5:00 PM   |   Monday to Friday',
+  AM:  '10:00 AM – 5:00 PM   |   Monday to Saturday',
+  EVE: '4:00 PM – 8:00 PM   |   Fridays Only'
+};
+
+/* ============================================================
+   EXCEL-STYLE EXPORTS (HTML table, saved with a .html extension)
+
+   The plain CSVs above match the templates' labels and column order but
+   can't carry color, borders, or merged cells — CSV has no such thing.
+   These two build a real <table> with inline styles that visually mirrors
+   the templates (banner colors, merged header cells, P/A/OFF highlighting,
+   signature lines). See excelHTMLDoc()/xlTd() near the top of the CSV
+   section for why a .html file, not a real .xlsx binary, is what actually
+   gets offered: Excel and Sheets both open an HTML table natively via
+   File → Open and render the styling correctly.
+   ============================================================ */
+var XL = {
+  ink: '#14171A', inkSoft: '#43505B', line: '#D7DCDD',
+  accent: '#2A6F97', accentSoft: '#DCEAF2',
+  good: '#2E7D4F', goodSoft: '#E1F0E6',
+  bad: '#B23A34', badSoft: '#F7E0DE',
+  off: '#8A94A0', offSoft: '#E9ECEE'
+};
+var XL_CELL = 'border:1px solid ' + XL.line + ';padding:5px 9px;font-size:12px;font-family:Arial,Helvetica,sans-serif;';
+
+function employeeTimesheetExcelHTML(emp, monthKey){
+  var mi = monthInfo(monthKey);
+  var monthOf = MONTH_NAMES[mi.month-1] + ' 1, ' + mi.year;
+  var html = '';
+
+  html += '<tr>' + xlTd('TIMESHEET', 'background:'+XL.ink+';color:#fff;font-weight:700;font-size:18px;padding:14px;text-align:center;', 8) + '</tr>';
+  html += '<tr>' + xlTd('Blue text shows the fields filled in for this employee.', 'padding:4px 9px;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';border:none;', 8) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 8) + '</tr>';
+
+  function fieldRow(l1, v1, l2, v2){
+    return '<tr>' +
+      xlTd(esc(l1), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
+      xlTd(esc(v1) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 3) +
+      xlTd(esc(l2), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
+      xlTd(esc(v2) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 3) +
+    '</tr>';
+  }
+  html += fieldRow('Employee Name', formatName(emp.name), 'Employee ID', '');
+  html += fieldRow('Employee E-mail', emp.email||'', 'Department', emp.department||'');
+  html += fieldRow('Manager', emp.manager||'', 'Position', emp.position||'');
+  html += '<tr>' +
+    xlTd('For the Month Of', XL_CELL + 'font-weight:700;background:#F7F8F9;') +
+    xlTd(esc(monthOf), XL_CELL + 'color:'+XL.accent+';', 7) +
+  '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 8) + '</tr>';
+
+  var headers = ['DATE','DAY','TIME IN','TIME OUT','TOTAL HRS','REG HRS','OT HRS','NOTES'];
+  html += '<tr>' + headers.map(function(h){
+    return xlTd(h, XL_CELL + 'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';text-align:center;');
+  }).join('') + '</tr>';
+
+  for(var d=1; d<=mi.daysInMonth; d++){
+    var entry = getEntry(emp.id, monthKey, d) || {};
+    var h = computeHours(entry.timeIn, entry.timeOut);
+    var weekend = dateForDay(monthKey, d).getDay() === 0;
+    var rowBg = weekend ? 'background:#F7F8F9;' : '';
+    var valStyle = XL_CELL + rowBg + 'color:'+XL.accent+';text-align:center;';
+    var plainStyle = XL_CELL + rowBg + 'text-align:center;';
+    html += '<tr>' +
+      xlTd(fmtDateShort(monthKey,d)+', '+mi.year, plainStyle) +
+      xlTd(weekdayShort(monthKey,d), plainStyle) +
+      xlTd(entry.timeIn?fmtTime12(entry.timeIn):'', valStyle) +
+      xlTd(entry.timeOut?fmtTime12(entry.timeOut):'', valStyle) +
+      xlTd(h.total===null?'':h.total, valStyle) +
+      xlTd(h.reg===null?'':h.reg, valStyle) +
+      xlTd(h.ot===null?'':h.ot, valStyle) +
+      xlTd(esc(entry.notes||''), XL_CELL + rowBg) +
+    '</tr>';
+  }
+
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 8) + '</tr>';
+  html += '<tr>' +
+    xlTd('Employee Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 3) +
+    xlTd('', 'border:none;padding:4px;') +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
+  '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:10px;', 8) + '</tr>';
+  html += '<tr>' +
+    xlTd('Manager Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 3) +
+    xlTd('', 'border:none;padding:4px;') +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
+  '</tr>';
+
+  var t = monthTotals(emp.id, monthKey);
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 8) + '</tr>';
+  html += '<tr>' +
+    xlTd('Totals', XL_CELL+'font-weight:700;background:#F7F8F9;') +
+    xlTd('Days Present: '+t.daysPresent, XL_CELL) +
+    xlTd('Days Absent: '+t.daysAbsent, XL_CELL, 2) +
+    xlTd(t.totalHrs, XL_CELL+'text-align:center;') +
+    xlTd(t.regHrs, XL_CELL+'text-align:center;') +
+    xlTd(t.otHrs, XL_CELL+'text-align:center;') +
+    xlTd('', XL_CELL) +
+  '</tr>';
+
+  return excelHTMLDoc('Timesheet — ' + formatName(emp.name) + ' — ' + monthKeyLabel(monthKey), html);
+}
+
+/* Shared by both attendance exports below (the company-wide grid and the
+   single-employee view) so the two never drift apart: same day-header
+   row, same per-employee row with the same OFF/P/A coloring and totals. */
+function attendanceDayHeaderRowHTML(monthKey){
+  var mi = monthInfo(monthKey);
+  var cells = xlTd('EMPLOYEE NAME', XL_CELL+'font-weight:700;background:'+XL.accentSoft+';text-align:left;');
+  for(var d=1; d<=mi.daysInMonth; d++){
+    cells += xlTd(weekdayShort(monthKey,d)+'<br>'+d, XL_CELL+'font-weight:700;background:'+XL.accentSoft+';text-align:center;font-size:10.5px;');
+  }
+  cells += xlTd('DAYS<br>PRESENT', XL_CELL+'font-weight:700;background:'+XL.accentSoft+';text-align:center;font-size:10.5px;');
+  cells += xlTd('DAYS<br>ABSENT', XL_CELL+'font-weight:700;background:'+XL.accentSoft+';text-align:center;font-size:10.5px;');
+  return '<tr>' + cells + '</tr>';
+}
+function attendanceEmployeeRowHTML(emp, shift, monthKey){
+  var mi = monthInfo(monthKey);
+  var row = xlTd(esc(formatName(emp.name)), XL_CELL+'font-weight:600;');
+  var p=0, a=0;
+  for(var d=1; d<=mi.daysInMonth; d++){
+    if(!isShiftWorkDay(shift, monthKey, d)){
+      row += xlTd('OFF', XL_CELL+'background:'+XL.offSoft+';color:'+XL.off+';text-align:center;font-size:10.5px;');
+      continue;
+    }
+    var entry = getEntry(emp.id, monthKey, d);
+    var s = entry ? (entry.status || '') : '';
+    if(s==='P'){ p++; row += xlTd('P', XL_CELL+'background:'+XL.goodSoft+';color:'+XL.good+';font-weight:700;text-align:center;'); }
+    else if(s==='A'){ a++; row += xlTd('A', XL_CELL+'background:'+XL.badSoft+';color:'+XL.bad+';font-weight:700;text-align:center;'); }
+    else { row += xlTd('', XL_CELL+'text-align:center;'); }
+  }
+  row += xlTd(p, XL_CELL+'font-weight:700;text-align:center;');
+  row += xlTd(a, XL_CELL+'font-weight:700;text-align:center;');
+  return '<tr>' + row + '</tr>';
+}
+function attendanceLegendRowHTML(totalCols, text){
+  return '<tr>' + xlTd('', 'border:none;padding:8px;', totalCols) + '</tr>' +
+    '<tr>' + xlTd(text, 'border:none;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';padding:0 9px;', totalCols) + '</tr>';
+}
+
+function attendanceGridExcelHTML(monthKey){
+  var mi = monthInfo(monthKey);
+  var totalCols = 1 + mi.daysInMonth + 2;
+
+  var byShift = {};
+  sortedActiveEmployees().forEach(function(e){ (byShift[e.shift] || (byShift[e.shift] = [])).push(e); });
+
+  var html = '';
+  html += '<tr>' + xlTd('Employee Attendance Schedule', 'font-weight:700;font-size:18px;text-align:center;padding:10px;border:none;', totalCols) + '</tr>';
+  html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
+
+  ATTENDANCE_GROUP_ORDER.forEach(function(shift, gi){
+    var emps = byShift[shift] || [];
+    html += '<tr>' + xlTd(esc(ATTENDANCE_GROUP_BANNER[shift]), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
+    html += attendanceDayHeaderRowHTML(monthKey);
+
+    if(!emps.length){
+      html += '<tr>' + xlTd('No one on this shift yet.', XL_CELL+'font-style:italic;color:'+XL.inkSoft+';', totalCols) + '</tr>';
+    } else {
+      emps.forEach(function(emp){
+        html += attendanceEmployeeRowHTML(emp, shift, monthKey);
+      });
+    }
+    if(gi < ATTENDANCE_GROUP_ORDER.length - 1){
+      html += '<tr>' + xlTd('', 'border:none;padding:6px;', totalCols) + '</tr>';
+    }
+  });
+
+  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside that shift’s schedule.');
+
+  return excelHTMLDoc('Attendance Schedule — ' + monthKeyLabel(monthKey), html);
+}
+
+var SUMMARY_COLS = ['Name','Department','Position','Shift','Days Present','Days Absent','Total Hrs','Reg Hrs','OT Hrs','Open Concerns'];
+
+function allEmployeesSummaryExcelHTML(monthKey){
+  var totalCols = SUMMARY_COLS.length;
+  var html = '';
+  html += '<tr>' + xlTd('SDI Timesheet Summary', 'font-weight:700;font-size:18px;text-align:center;padding:10px;border:none;', totalCols) + '</tr>';
+  html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
+
+  var headerCells = SUMMARY_COLS.map(function(col){
+    return xlTd(esc(col), XL_CELL+'font-weight:700;background:'+XL.accentSoft+';text-align:'+(col==='Name'||col==='Department'||col==='Position'||col==='Shift'?'left':'center')+';');
+  }).join('');
+  html += '<tr>' + headerCells + '</tr>';
+
+  var emps = sortedActiveEmployees();
+  if(!emps.length){
+    html += '<tr>' + xlTd('No active employees yet.', XL_CELL+'font-style:italic;color:'+XL.inkSoft+';', totalCols) + '</tr>';
+  } else {
+    emps.forEach(function(emp){
+      var t = monthTotals(emp.id, monthKey);
+      var openCount = openConcernsFor(emp.id).length;
+      html += '<tr>' +
+        xlTd(esc(formatName(emp.name)), XL_CELL+'font-weight:600;') +
+        xlTd(esc(emp.department || ''), XL_CELL) +
+        xlTd(esc(emp.position || ''), XL_CELL) +
+        xlTd(esc(emp.shiftLabel || ''), XL_CELL+'font-size:11.5px;') +
+        xlTd(t.daysPresent, XL_CELL+'text-align:center;color:'+XL.good+';font-weight:700;') +
+        xlTd(t.daysAbsent, XL_CELL+'text-align:center;'+(t.daysAbsent>0?'color:'+XL.bad+';font-weight:700;':'')) +
+        xlTd(t.totalHrs, XL_CELL+'text-align:center;') +
+        xlTd(t.regHrs, XL_CELL+'text-align:center;') +
+        xlTd(t.otHrs, XL_CELL+'text-align:center;') +
+        xlTd(openCount, XL_CELL+'text-align:center;'+(openCount>0?'color:'+XL.bad+';font-weight:700;background:'+XL.badSoft+';':'')) +
+        '</tr>';
+    });
+  }
+
+  return excelHTMLDoc('SDI Timesheet Summary — ' + monthKeyLabel(monthKey), html);
+}
+
+function employeeAttendanceExcelHTML(emp, monthKey){
+  var mi = monthInfo(monthKey);
+  var totalCols = 1 + mi.daysInMonth + 2;
+  var shift = emp.shift;
+
+  var html = '';
+  html += '<tr>' + xlTd('Employee Attendance Schedule', 'font-weight:700;font-size:18px;text-align:center;padding:10px;border:none;', totalCols) + '</tr>';
+  html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
+  html += '<tr>' + xlTd(esc(ATTENDANCE_GROUP_BANNER[shift] || emp.shiftLabel || ''), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
+  html += attendanceDayHeaderRowHTML(monthKey);
+  html += attendanceEmployeeRowHTML(emp, shift, monthKey);
+  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside this shift’s schedule.');
+
+  return excelHTMLDoc('Attendance — ' + formatName(emp.name) + ' — ' + monthKeyLabel(monthKey), html);
+}
+
+function formatName(name){
+  if(!name) return '';
+  return String(name).split(' ').map(function(w){
+    if(/^[A-Za-z]\.$/.test(w)) return w.toUpperCase();
+    if(w.length === 0) return w;
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(' ');
+}
+function sortedActiveEmployees(){
+  return activeEmployees().slice().sort(function(a,b){ return formatName(a.name).localeCompare(formatName(b.name)); });
+}
+/* Employee names aren't stored in one consistent format — some are
+   "Surname, First Middle" (comma-separated), others are plain
+   "First Middle Surname" with no comma at all. To sort a mixed list by
+   surname regardless of which style a given record uses: if there's a
+   comma, the surname is whatever comes before it; if not, the surname is
+   assumed to be the last word (matches how the non-comma names in this
+   data are actually ordered — e.g. "ENRIQUE SAURO" -> Sauro). */
+function surnameOf(name){
+  var n = String(name||'').trim();
+  if(!n) return '';
+  var comma = n.indexOf(',');
+  if(comma !== -1) return n.slice(0, comma).trim();
+  var parts = n.split(/\s+/);
+  return parts[parts.length-1];
+}
+
+/* ============================================================
+   EPHEMERAL UI STATE (not persisted / not synced)
+   ============================================================ */
+var ui = {
+  adminTab: 'overview', modal: null, modalData: {}, adminEmpId: null, concernFilter: 'open', overviewShift: 'all',
+  employeeMonth: null, adminMonth: null, revealedPasscodes: {}, peopleSort: '',
+  landingSearch: { query: '', selectedId: null, error: null }
+};
+restoreUiState(ui); // see "UI STATE" above — carries tab/employee/month across the save-triggered reload
+function empMonth(){ if(!ui.employeeMonth) ui.employeeMonth = currentMonthKey(); return ui.employeeMonth; }
+function adminMonth(){ if(!ui.adminMonth) ui.adminMonth = currentMonthKey(); return ui.adminMonth; }
+function monthNavHTML(dataScope, monthKey){
+  return '' +
+    '<div class="row" style="gap:8px; align-items:center;">' +
+      '<button class="btn btn-sm" data-action="month-prev" data-scope="' + dataScope + '" aria-label="Previous month">&larr;</button>' +
+      '<span style="font-weight:600; min-width:150px; text-align:center;">' + esc(monthKeyLabel(monthKey)) + '</span>' +
+      '<button class="btn btn-sm" data-action="month-next" data-scope="' + dataScope + '" aria-label="Next month">&rarr;</button>' +
+      (monthKey !== currentMonthKey() ? '<button class="btn btn-sm btn-ghost" data-action="month-today" data-scope="' + dataScope + '">This Month</button>' : '') +
+    '</div>';
+}
+
+var SHIFT_LABELS = { AM: '10:00 AM – 5:00 PM (Mon–Sat)', PM: '12:00 PM – 5:00 PM (Mon–Fri)', EVE: '4:00 PM – 8:00 PM (Fridays)' };
+/* Search-bar/autocomplete field for picking an employee on the Admin ->
+   Edit Entries tab — same interaction pattern as the landing page's
+   employee search, but selection is immediate (no "Continue" step) since
+   this just swaps which employee's entries are being edited. */
+/* This box is a search field, not a display field for whoever's
+   currently selected — it always renders empty (placeholder only) and
+   only shows matches once 3+ letters are typed (SEARCH_MIN_CHARS
+   below), same as the landing page's own name search. Previously it
+   pre-filled with the selected employee's formatted name on every
+   render, which looked like a name field rather than a search box and
+   meant re-typing over an existing name to search for someone else
+   (see v25). v25 also added an "Editing <name>" readout under the box
+   so that context wasn't lost — Ken asked for that readout removed
+   again in v26. In v30, Ken asked for a name readout back, this time
+   so he can confirm at a glance he's editing the right person's
+   timesheet: it now shows to the side of the search box itself
+   (a small pill next to the field) rather than as a separate line
+   underneath, and only appears once someone is actually selected. */
+function adminEmpSearchHTML(selectedEmp){
+  return '<div class="row" style="align-items:flex-end; gap:10px;">' +
+    '<label class="field autocomplete" for="admin-emp-search" style="min-width:260px;">Employee' +
+      '<input type="text" id="admin-emp-search" placeholder="Search name" autocomplete="off" value="">' +
+      '<input type="hidden" id="admin-emp-selected-id" value="' + esc(selectedEmp ? selectedEmp.id : '') + '">' +
+      '<div id="admin-emp-results" class="autocomplete-results" hidden></div>' +
+    '</label>' +
+    (selectedEmp ?
+      '<span id="admin-emp-selected-name" class="pill pill-good" style="margin-bottom:9px;">Editing: ' + esc(formatName(selectedEmp.name)) + '</span>'
+      : '') +
+  '</div>';
+}
+
+/* Both employee-search boxes (this one and the landing page's) wait for at
+   least this many characters before showing any results — no full-list
+   dump on focus, and no results for a single stray keystroke. */
+var SEARCH_MIN_CHARS = 3;
+
+/* Renders the filtered/full employee list into the admin search's results
+   dropdown, grouped visually via the shift badge on each row. Called
+   directly on input/focus — never goes through render(), so the search
+   box never loses focus or cursor position while typing. */
+function renderAdminEmpResults(query){
+  var box = $('admin-emp-results');
+  if(!box) return;
+  var q = (query || '').trim().toLowerCase();
+  if(q.length < SEARCH_MIN_CHARS){
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  var emps = sortedActiveEmployees();
+  var matches = emps.filter(function(e){ return formatName(e.name).toLowerCase().indexOf(q) !== -1; });
+  if(!matches.length){
+    box.innerHTML = '<div class="autocomplete-empty">No matching name</div>';
+    box.hidden = false;
+    return;
+  }
+  box.innerHTML = matches.map(function(e){
+    return '<div class="autocomplete-item" data-emp-id="' + esc(e.id) + '" tabindex="0">' +
+      '<span>' + esc(formatName(e.name)) + '</span>' +
+      '<span class="badge-shift">' + esc(e.shift) + '</span>' +
+    '</div>';
+  }).join('');
+  box.hidden = false;
+}
+
+function pickAdminEmployee(empId){
+  var emp = getEmployee(empId);
+  if(!emp) return;
+  ui.adminEmpId = emp.id;
+  render();
+}
+
+/* ============================================================
+   RENDER DISPATCH
+   ============================================================ */
+function render(){
+  var app = $('app');
+  if(!app) return;
+  // Guard the whole render: if any view function throws (a bad state shape,
+  // an unexpected edge case), fall back to a clear "something went wrong"
+  // screen instead of leaving a blank or half-drawn page on screen.
+  try{
+    var html = renderHeader() + '<main>' + renderMain() + '</main>' + renderFooter();
+    app.innerHTML = html;
+    if(ui.modal) renderModalInto(app);
+    wireInputsAfterRender();
+  }catch(err){
+    console.error('SDI Timesheet: render failed', err);
+    try{ app.innerHTML = renderFatalErrorHTML('Something went wrong showing this page.'); }catch(e2){ /* give up quietly */ }
+  }
+}
+
+function renderFatalErrorHTML(detail){
+  return '<div class="center-wrap" style="padding-top:60px;">' +
+    '<div class="card card-pad stack" style="max-width:440px; width:100%; text-align:center; align-items:center;">' +
+      '<span class="eyebrow" style="color:var(--bad);">Something went wrong</span>' +
+      '<h1 class="section-title" style="font-size:22px; margin:0;">The timesheet couldn’t load</h1>' +
+      '<p class="muted" style="margin:0;">' + esc(detail || 'There was a problem loading this page.') + ' Reloading usually fixes it — if it keeps happening, contact ' + esc(STATE.primaryAdmin || 'your admin') + '.</p>' +
+      '<button class="btn btn-primary" data-action="reload-page">Reload Page</button>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderHeader(){
+  var who = '';
+  if(session.role === 'employee'){
+    var emp = getEmployee(session.employeeId);
+    who = '<div class="who">Viewing <strong>' + esc(emp ? formatName(emp.name) : 'Unknown') + '</strong>'
+        + '<button class="btn btn-sm topbar-btn" data-action="go-landing">Switch</button></div>';
+  } else if(session.role === 'admin'){
+    who = '<div class="who"><span class="pill pill-accent">Admin</span> <strong>' + esc(session.adminName) + '</strong>'
+        + '<button class="btn btn-sm topbar-btn" data-action="admin-logout">Exit Admin</button></div>';
+  } else {
+    // No header button here on purpose — the landing page's own "Manage the
+    // timesheet" card already offers Admin Login, and the other non-admin
+    // views (setup/auth/admin-login) have their own Cancel/Switch nav back
+    // to landing. One button sitewide, not two.
+    who = '';
+  }
+  return '' +
+    '<div class="topbar">' +
+      '<img class="logo" src="' + LOGO_SRC + '" alt="' + esc(STATE.orgName) + ' logo">' +
+      '<div class="org-meta">' +
+        '<span class="org-name">SDI Timesheet</span>' +
+        '<span class="org-sub">Automated Timesheet</span>' +
+      '</div>' +
+      who +
+    '</div>';
+}
+
+function renderFooter(){
+  var writeNote = canWrite ? '' : ' · view-only in this window';
+  return '<div class="footer-note">' + esc(STATE.orgName) + ' — automated timesheet' + writeNote + '</div>';
+}
+
+function renderMain(){
+  if(session.role === 'employee'){
+    var emp = getEmployee(session.employeeId);
+    if(emp && !emp.active){
+      // Deactivated while they were logged in (e.g. an admin turned this
+      // off mid-session) — same "email for reactivation" message as trying
+      // to log back in, not a silent bounce to the landing page.
+      session = { role: null, employeeId: null, adminName: null }; saveSession();
+      ui.modal = 'accountInactive'; ui.modalData = {};
+      return viewLanding();
+    }
+    if(!emp){ session = { role: null, employeeId: null, adminName: null }; saveSession(); return viewLanding(); }
+    return viewEmployeeDash(emp);
+  }
+  if(session.role === 'employee-setup'){
+    var setupEmp = getEmployee(session.pendingEmployeeId);
+    if(!setupEmp){ session = { role: null, employeeId: null, adminName: null }; saveSession(); return viewLanding(); }
+    return viewEmployeeSetup(setupEmp);
+  }
+  if(session.role === 'employee-auth'){
+    var authEmp = getEmployee(session.pendingEmployeeId);
+    if(!authEmp){ session = { role: null, employeeId: null, adminName: null }; saveSession(); return viewLanding(); }
+    return viewEmployeeAuth(authEmp);
+  }
+  if(session.role === 'admin-login'){
+    return viewAdminLogin();
+  }
+  if(session.role === 'admin'){
+    if(STATE.admins.indexOf(session.adminName) === -1){ session = { role: null, employeeId: null, adminName: null }; saveSession(); return viewLanding(); }
+    return viewAdminDash();
+  }
+  return viewLanding();
+}
+
+/* ============================================================
+   VIEW: LANDING
+   ============================================================ */
+function viewLanding(){
+  var q = ui.landingSearch.query || '';
+  var selId = ui.landingSearch.selectedId || '';
+  var err = ui.landingSearch.error ? '<p style="color:var(--bad); font-size:12.5px; margin:0;">' + esc(ui.landingSearch.error) + '</p>' : '';
+  return '' +
+  '<div class="center-wrap" style="padding-top:8px;">' +
+    '<div class="stack" style="max-width:440px; width:100%;">' +
+      '<div class="stack" style="text-align:center; gap:6px;">' +
+        '<span class="eyebrow">' + esc(STATE.orgName) + '</span>' +
+        '<h1 class="section-title" style="font-size:30px;">Who’s checking their timesheet?</h1>' +
+        '<p class="muted" style="margin:0;">Search your name to view your own hours and attendance. Your timesheet is private to you and admins.</p>' +
+      '</div>' +
+      '<div class="card card-pad stack">' +
+        '<label class="field autocomplete" for="landing-emp-search">Your name' +
+          '<input type="text" id="landing-emp-search" placeholder="Search name" autocomplete="off" value="' + esc(q) + '">' +
+          '<input type="hidden" id="landing-emp-selected-id" value="' + esc(selId) + '">' +
+          '<div id="landing-emp-results" class="autocomplete-results" hidden></div>' +
+        '</label>' +
+        err +
+        '<button class="btn btn-primary" data-action="landing-view-employee">Continue</button>' +
+      '</div>' +
+      '<div class="divider-label">or</div>' +
+      '<div class="card card-pad row" style="justify-content:space-between;">' +
+        '<div>' +
+          '<div style="font-weight:600;">Manage the timesheet</div>' +
+          '<div class="muted" style="font-size:12.5px;">Edit hours, review concerns, manage people.</div>' +
+        '</div>' +
+        '<button class="btn" data-action="go-admin-login">Admin Login</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+/* Renders the filtered/full employee list into the landing search's results
+   dropdown. Called directly on input/focus — never goes through render(),
+   so the search box never loses focus or cursor position while typing. */
+function renderLandingResults(query){
+  var box = $('landing-emp-results');
+  if(!box) return;
+  var q = (query || '').trim().toLowerCase();
+  if(q.length < SEARCH_MIN_CHARS){
+    // Fewer than SEARCH_MIN_CHARS typed — stay closed. Only show results
+    // once there's enough of a name to actually narrow things down, not a
+    // full list to scroll through or a match on one stray keystroke.
+    box.hidden = true;
+    box.innerHTML = '';
+    return;
+  }
+  // Inactive employees are deliberately included here (unlike the admin's
+  // Edit Entries search) so someone who's been deactivated can still find
+  // their own name and get told to email for reactivation, instead of
+  // just silently not appearing with no explanation. See v22.
+  var emps = STATE.employees.slice().sort(function(a,b){ return formatName(a.name).localeCompare(formatName(b.name)); });
+  var matches = emps.filter(function(e){ return formatName(e.name).toLowerCase().indexOf(q) !== -1; });
+  if(!matches.length){
+    box.innerHTML = '<div class="autocomplete-empty">No matching name</div>';
+    box.hidden = false;
+    return;
+  }
+  box.innerHTML = matches.map(function(e){
+    var badge = e.active ? ('<span class="badge-shift">' + esc(e.shift) + '</span>') : '<span class="pill pill-off">Inactive</span>';
+    return '<div class="autocomplete-item" data-emp-id="' + esc(e.id) + '" tabindex="0">' +
+      '<span>' + esc(formatName(e.name)) + '</span>' +
+      badge +
+    '</div>';
+  }).join('');
+  box.hidden = false;
+}
+
+function pickLandingEmployee(empId){
+  var emp = getEmployee(empId);
+  if(!emp) return;
+  ui.landingSearch.selectedId = emp.id;
+  ui.landingSearch.query = formatName(emp.name);
+  ui.landingSearch.error = null;
+  var input = $('landing-emp-search');
+  var hidden = $('landing-emp-selected-id');
+  var box = $('landing-emp-results');
+  if(input) input.value = formatName(emp.name);
+  if(hidden) hidden.value = emp.id;
+  if(box){ box.hidden = true; box.innerHTML = ''; }
+}
+
+/* ============================================================
+   VIEW: EMPLOYEE PROFILE SETUP (first visit — claim your name)
+   ============================================================ */
+function viewEmployeeSetup(emp){
+  var err = ui.modalData.passcodeError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.passcodeError) + '</p>' : '';
+  return '' +
+  '<div class="center-wrap">' +
+    '<div class="card card-pad stack" style="max-width:380px; width:100%;">' +
+      '<div class="stack" style="gap:4px;">' +
+        '<span class="eyebrow">First time here</span>' +
+        '<h1 class="section-title" style="font-size:24px;">Set up your access</h1>' +
+        '<p class="muted" style="margin:0; font-size:13px;">You’re claiming the profile for <strong>' + esc(formatName(emp.name)) + '</strong>. Choose a passcode — you’ll use it next time to keep your timesheet private to you and admins.</p>' +
+      '</div>' +
+      '<label class="field">Choose a passcode (4+ characters)' +
+        '<input type="password" id="setup-passcode-1" autocomplete="new-password">' +
+      '</label>' +
+      '<label class="field">Confirm passcode' +
+        '<input type="password" id="setup-passcode-2" autocomplete="new-password">' +
+      '</label>' +
+      err +
+      '<div class="row" style="justify-content:space-between;">' +
+        '<button class="btn btn-ghost" data-action="go-landing">Cancel</button>' +
+        '<button class="btn btn-primary" data-action="employee-setup-submit">Create Access</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ============================================================
+   VIEW: EMPLOYEE PASSCODE ENTRY (returning visit)
+   ============================================================ */
+function viewEmployeeAuth(emp){
+  var err = ui.modalData.passcodeError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.passcodeError) + '</p>' : '';
+  return '' +
+  '<div class="center-wrap">' +
+    '<div class="card card-pad stack" style="max-width:380px; width:100%;">' +
+      '<div class="stack" style="gap:4px;">' +
+        '<span class="eyebrow">Welcome back</span>' +
+        '<h1 class="section-title" style="font-size:24px;">' + esc(formatName(emp.name)) + '</h1>' +
+        '<p class="muted" style="margin:0; font-size:13px;">Enter your passcode to view your timesheet.</p>' +
+      '</div>' +
+      '<label class="field">Passcode' +
+        '<input type="password" id="auth-passcode" autocomplete="current-password">' +
+      '</label>' +
+      err +
+      '<div class="row" style="justify-content:space-between;">' +
+        '<button class="btn btn-ghost" data-action="go-landing">Not you? Switch</button>' +
+        '<button class="btn btn-primary" data-action="employee-auth-submit">Unlock</button>' +
+      '</div>' +
+      '<p class="muted" style="margin:0; font-size:11.5px;">Forgot it? Ask an admin to reset your passcode.</p>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ============================================================
+   VIEW: ADMIN LOGIN
+   ============================================================ */
+function viewAdminLogin(){
+  var lastTried = ui.modalData.lastTriedName || STATE.admins[0];
+  var options = STATE.admins.map(function(a){
+    var sel = a === lastTried ? ' selected' : '';
+    return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>';
+  }).join('');
+  var err = ui.modalData.loginError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.loginError) + '</p>' : '';
+  return '' +
+  '<div class="center-wrap">' +
+    '<div class="card card-pad stack" style="max-width:380px; width:100%;">' +
+      '<div class="stack" style="gap:4px;">' +
+        '<span class="eyebrow">Restricted</span>' +
+        '<h1 class="section-title" style="font-size:24px;">Admin Login</h1>' +
+        '<p class="muted" style="margin:0; font-size:13px;">Only people on the admin list can edit entries, resolve concerns, and manage staff.</p>' +
+      '</div>' +
+      '<label class="field">Admin name' +
+        '<select id="admin-login-name">' + options + '</select>' +
+      '</label>' +
+      '<label class="field">Password' +
+        '<input type="password" id="admin-login-pass" placeholder="••••••" autocomplete="current-password">' +
+      '</label>' +
+      err +
+      '<div class="row" style="justify-content:space-between;">' +
+        '<button class="btn btn-ghost" data-action="go-landing">Cancel</button>' +
+        '<button class="btn btn-primary" data-action="admin-login-submit">Log In</button>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+/* Today's clock-in/clock-out card — only meaningful when the employee is
+   looking at the current month, since punching a past or future day
+   doesn't make sense. Employees can only ever punch *today*; any other
+   correction still has to go through an admin (Edit Entries) or a
+   flagged concern, same as before. */
+function punchCardHTML(emp, monthKey, today){
+  if(monthKey !== currentMonthKey() || today === -1) return '';
+  var entry = getEntry(emp.id, monthKey, today) || {};
+  var dateLabel = fmtDateShort(monthKey, today) + ' · ' + weekdayLong(monthKey, today);
+
+  if(!entry.timeIn){
+    return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
+      '<div>' +
+        '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
+        '<div class="muted" style="font-size:13px;">You haven’t clocked in yet.</div>' +
+      '</div>' +
+      '<button class="btn btn-primary" data-action="punch-time-in">Time In</button>' +
+    '</div>';
+  }
+  if(entry.timeIn && !entry.timeOut){
+    return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
+      '<div>' +
+        '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
+        '<div style="font-size:13px;">Clocked in at <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong></div>' +
+      '</div>' +
+      '<button class="btn btn-primary" data-action="punch-time-out">Time Out</button>' +
+    '</div>';
+  }
+  var h = computeHours(entry.timeIn, entry.timeOut);
+  return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
+    '<div>' +
+      '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
+      '<div style="font-size:13px;">Clocked <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong> – <strong>' + esc(fmtTime12(entry.timeOut)) + '</strong> · ' + esc(fmtHrs(h.total)) + ' hrs</div>' +
+    '</div>' +
+    '<span class="pill pill-good">Done for today</span>' +
+  '</div>';
+}
+
+/* ============================================================
+   VIEW: EMPLOYEE DASHBOARD
+   ============================================================ */
+function viewEmployeeDash(emp){
+  var monthKey = empMonth();
+  var mi = monthInfo(monthKey);
+  var t = monthTotals(emp.id, monthKey);
+  var today = todayDayNum(monthKey);
+  var myConcerns = STATE.concerns.filter(function(c){ return c.empId === emp.id; }).sort(function(a,b){ return b.submittedAt.localeCompare(a.submittedAt); });
+
+  var rows = '';
+  for(var d=1; d<=mi.daysInMonth; d++){
+    var entry = getEntry(emp.id, monthKey, d) || {};
+    var h = computeHours(entry.timeIn, entry.timeOut);
+    var statusPill = statusPillHTML(entry.status);
+    var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
+    var todayCls = (d === today) ? ' row-today' : '';
+    var hasConcernOpen = myConcerns.some(function(c){ return c.day === d && c.month === monthKey && c.status === 'open'; });
+    rows += '<tr class="' + (weekendCls+todayCls).trim() + '">' +
+      '<td>' + esc(fmtDateShort(monthKey, d)) + '</td>' +
+      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + '</td>' +
+      '<td>' + statusPill + '</td>' +
+      '<td class="num mono">' + esc(entry.timeIn ? fmtTime12(entry.timeIn) : '—') + '</td>' +
+      '<td class="num mono">' + esc(entry.timeOut ? fmtTime12(entry.timeOut) : '—') + '</td>' +
+      '<td class="num mono">' + esc(fmtHrs(h.total)) + '</td>' +
+      '<td class="num mono">' + esc(fmtHrs(h.reg)) + '</td>' +
+      '<td class="num mono">' + (h.ot ? '<span class="pill pill-warn">' + esc(fmtHrs(h.ot)) + '</span>' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + esc(entry.notes || '') + '</td>' +
+      '<td>' + (hasConcernOpen
+          ? '<span class="pill pill-bad">Flagged</span>'
+          : '<button class="btn btn-sm btn-ghost" data-action="open-concern-modal" data-day="' + d + '">Flag issue</button>') +
+      '</td>' +
+    '</tr>';
+  }
+
+  var concernsList = myConcerns.length ? myConcerns.map(concernRowHTML).join('') : '<p class="empty">No concerns filed yet.</p>';
+
+  return '' +
+  '<div class="stack" style="gap:24px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
+      '<div>' +
+        '<span class="eyebrow">' + esc(emp.department || '') + ' · ' + esc(emp.position || '') + '</span>' +
+        '<h1 class="section-title" style="font-size:28px;">' + esc(formatName(emp.name)) + '</h1>' +
+        '<p class="muted" style="margin:2px 0 0;">' + esc(emp.shiftLabel || '') + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
+      '</div>' +
+      '<div class="row">' +
+        '<button class="btn btn-sm" data-action="download-my-timesheet">Download Timesheet</button>' +
+        '<button class="btn btn-sm" data-action="download-my-attendance">Download Attendance</button>' +
+        '<button class="btn btn-sm btn-ghost" data-action="change-passcode-open">Change Passcode</button>' +
+      '</div>' +
+    '</div>' +
+
+    punchCardHTML(emp, monthKey, today) +
+
+    '<div class="grid grid-4">' +
+      statCard('Days Present', t.daysPresent, 'good') +
+      statCard('Days Absent', t.daysAbsent, t.daysAbsent > 0 ? 'bad' : '') +
+      statCard('Reg Hours', fmtHrs(t.regHrs), '') +
+      statCard('OT Hours', fmtHrs(t.otHrs), t.otHrs > 0 ? 'warn' : '') +
+    '</div>' +
+
+    '<div class="card">' +
+      '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
+        '<h2 style="font-size:18px;">Daily record</h2>' +
+        monthNavHTML('employee', monthKey) +
+      '</div>' +
+      '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
+        '<table>' +
+          '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th class="num">Time In</th><th class="num">Time Out</th><th class="num">Total</th><th class="num">Reg</th><th class="num">OT</th><th>Notes</th><th>Concern</th></tr></thead>' +
+          '<tbody>' + rows + '</tbody>' +
+        '</table>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card card-pad stack">' +
+      '<h2 style="font-size:18px;">My concerns</h2>' +
+      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Flag a day that looks wrong and ' + esc(STATE.primaryAdmin) + ' will review it.</p>' +
+      concernsList +
+    '</div>' +
+  '</div>';
+}
+
+function statusPillHTML(status){
+  if(status === 'P') return '<span class="pill pill-good">Present</span>';
+  if(status === 'A') return '<span class="pill pill-bad">Absent</span>';
+  if(status === 'OFF') return '<span class="pill pill-off">Off</span>';
+  return '<span class="pill pill-off">—</span>';
+}
+
+function concernRowHTML(c){
+  var emp = getEmployee(c.empId);
+  var statusPill = c.status === 'open' ? '<span class="pill pill-warn">Open</span>' : '<span class="pill pill-good">Resolved</span>';
+  return '' +
+  '<div class="card-pad" style="border:1px solid var(--line); border-radius:10px; padding:14px 16px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:flex-start;">' +
+      '<div>' +
+        '<div style="font-weight:600; font-size:13.5px;">' + esc(fmtDateShort(c.month, c.day) + ' ' + monthInfo(c.month).year) + (emp ? ' · ' + esc(formatName(emp.name)) : '') + '</div>' +
+        '<div class="muted" style="font-size:12.5px; margin-top:2px;">' + esc(c.message) + '</div>' +
+        (c.adminReply ? '<div style="font-size:12.5px; margin-top:8px; padding:8px 10px; background:var(--surface-2); border-radius:7px;"><strong>Reply:</strong> ' + esc(c.adminReply) + '</div>' : '') +
+      '</div>' +
+      statusPill +
+    '</div>' +
+  '</div>';
+}
+
+function statCard(label, value, kind){
+  return '<div class="stat"><div class="stat-label">' + esc(label) + '</div><div class="stat-value' + (kind ? ' ' + kind : '') + '">' + esc(value) + '</div></div>';
+}
+
+/* ============================================================
+   VIEW: ADMIN DASHBOARD
+   ============================================================ */
+function viewAdminDash(){
+  var openCount = allOpenConcerns().length;
+  var tabs = [
+    ['overview','Overview'],
+    ['entries','Edit Entries'],
+    ['concerns','Concerns', openCount],
+    ['people','People & Access'],
+    ['downloads','Downloads']
+  ];
+  var tabsHTML = tabs.map(function(t){
+    var active = ui.adminTab === t[0] ? ' active' : '';
+    var count = t[2] ? '<span class="count">' + t[2] + '</span>' : '';
+    return '<button class="tab' + active + '" data-action="admin-tab" data-tab="' + t[0] + '">' + t[1] + count + '</button>';
+  }).join('');
+
+  var body = '';
+  if(ui.adminTab === 'entries') body = adminEntriesTab();
+  else if(ui.adminTab === 'concerns') body = adminConcernsTab();
+  else if(ui.adminTab === 'people') body = adminPeopleTab();
+  else if(ui.adminTab === 'downloads') body = adminDownloadsTab();
+  else body = adminOverviewTab();
+
+  return '<div class="stack" style="gap:18px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
+      '<div><span class="eyebrow">Admin</span><h1 class="section-title" style="font-size:26px;">' + esc(STATE.orgName) + '</h1></div>' +
+      monthNavHTML('admin', adminMonth()) +
+    '</div>' +
+    '<div class="tabs">' + tabsHTML + '</div>' +
+    body +
+  '</div>';
+}
+
+function adminOverviewTab(){
+  var monthKey = adminMonth();
+  var shiftFilter = ui.overviewShift || 'all';
+  var shownEmps = sortedActiveEmployees().filter(function(e){ return shiftFilter === 'all' || e.shift === shiftFilter; });
+
+  var shiftBtns = [['all','All Shifts'],['AM','AM Shift'],['PM','PM Shift'],['EVE','Evening Shift']].map(function(s){
+    var active = shiftFilter === s[0] ? ' active' : '';
+    return '<button class="tab' + active + '" data-action="overview-shift-filter" data-shift="' + s[0] + '">' + s[1] + '</button>';
+  }).join('');
+
+  var rows = shownEmps.length ? shownEmps.map(function(emp){
+    var t = monthTotals(emp.id, monthKey);
+    var oc = openConcernsFor(emp.id).length;
+    return '<tr>' +
+      '<td>' + esc(formatName(emp.name)) + '<div class="muted" style="font-size:11.5px;">' + esc(emp.position||'') + '</div></td>' +
+      '<td><span class="badge-shift" title="' + esc(SHIFT_LABELS[emp.shift]||'') + '">' + esc(emp.shift) + '</span></td>' +
+      '<td class="num mono">' + t.daysPresent + '</td>' +
+      '<td class="num mono">' + (t.daysAbsent > 0 ? '<span class="pill pill-bad">'+t.daysAbsent+'</span>' : t.daysAbsent) + '</td>' +
+      '<td class="num mono">' + fmtHrs(t.regHrs) + '</td>' +
+      '<td class="num mono">' + (t.otHrs > 0 ? '<span class="pill pill-warn">'+fmtHrs(t.otHrs)+'</span>' : fmtHrs(t.otHrs)) + '</td>' +
+      '<td class="num">' + (oc > 0 ? '<span class="pill pill-bad">'+oc+' open</span>' : '<span class="muted">—</span>') + '</td>' +
+      '<td><button class="btn btn-sm" data-action="admin-goto-entries" data-id="' + esc(emp.id) + '">Edit</button></td>' +
+    '</tr>';
+  }).join('') : '<tr><td colspan="8"><p class="empty" style="padding:20px;">No one on this shift yet.</p></td></tr>';
+
+  var totalHrsAll = 0, otAll = 0;
+  shownEmps.forEach(function(e){ var t = monthTotals(e.id, monthKey); totalHrsAll += t.totalHrs; otAll += t.otHrs; });
+
+  return '<div class="stack">' +
+    '<div class="grid grid-4">' +
+      statCard('Active People', shownEmps.length, '') +
+      statCard('Open Concerns', allOpenConcerns().length, allOpenConcerns().length ? 'bad' : '') +
+      statCard('Total Hours', fmtHrs(Math.round(totalHrsAll*100)/100), '') +
+      statCard('OT Hours', fmtHrs(Math.round(otAll*100)/100), otAll > 0 ? 'warn' : '') +
+    '</div>' +
+    '<div class="tabs" style="margin-bottom:2px;">' + shiftBtns + '</div>' +
+    '<div class="table-wrap">' +
+      '<table>' +
+        '<thead><tr><th>Employee</th><th>Shift</th><th class="num">Present</th><th class="num">Absent</th><th class="num">Reg Hrs</th><th class="num">OT Hrs</th><th class="num">Concerns</th><th></th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>' +
+  '</div>';
+}
+
+/* A native <input type="time"> only lets you cycle its hour spinner
+   1–12 (or 00–23 in 24-hour locales) — there's no "0"/blank stop on the
+   dial itself, so once a time is set, clearing it back out again isn't
+   obvious (it depends on a tiny, easy-to-miss browser-native "x" that
+   some browsers don't even show). Ken hit exactly this trying to clear
+   a Time In. Fixing it the honest way: keep the native time input (still
+   the best editing widget for this on both desktop and mobile) and pair
+   it with an explicit, always-visible Clear button that blanks the field
+   directly — no hunting for a hidden control. See v24 below. */
+function timeFieldHTML(cls, value){
+  return '<div class="row" style="gap:4px; flex-wrap:nowrap; align-items:center;">' +
+      '<input type="time" class="' + cls + '" value="' + esc(value || '') + '" style="min-width:110px;">' +
+      '<button type="button" class="btn btn-sm btn-ghost" data-action="clear-time-field" title="Clear this time" aria-label="Clear this time" style="padding:5px 9px;">&times;</button>' +
+    '</div>';
+}
+function adminEntriesTab(){
+  var monthKey = adminMonth();
+  var emps = sortedActiveEmployees();
+  var emp = getEmployee(ui.adminEmpId);
+  // v23–v29 used to auto-pick the first employee here whenever nothing
+  // was selected, so this tab always showed *someone's* timesheet. Ken
+  // asked (v30) for that to stop: no employee's entries should be on
+  // screen until one is actually picked from the search box above, so
+  // there's no chance of silently editing the wrong person's data.
+  // A previously-selected employee who gets deleted/deactivated out
+  // from under this tab (the v22 edge case) is handled the same way —
+  // the stale id is cleared rather than snapping to some other
+  // employee nobody asked for, which is just as surprising as the old
+  // "No employees yet" crash it was originally meant to avoid.
+  if(ui.adminEmpId && (!emp || !emp.active)){
+    ui.adminEmpId = null;
+    emp = null;
+  }
+
+  if(!emp){
+    return '<div class="stack">' +
+      adminEmpSearchHTML(null) +
+      '<p class="empty">' + (emps.length ? 'Search for an employee above to view or edit their timesheet.' : 'No employees yet.') + '</p>' +
+    '</div>';
+  }
+
+  var mi = monthInfo(monthKey);
+  var rows = '';
+  for(var d=1; d<=mi.daysInMonth; d++){
+    var entry = getEntry(emp.id, monthKey, d) || {};
+    var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
+    rows += '<tr class="' + weekendCls.trim() + '" data-day="' + d + '">' +
+      '<td>' + esc(fmtDateShort(monthKey, d)) + '</td>' +
+      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + '</td>' +
+      '<td><select class="entry-status" style="min-width:90px;">' +
+        ['', 'P','A','OFF'].map(function(s){
+          var sel = (entry.status || '') === s ? ' selected' : '';
+          return '<option value="' + s + '"' + sel + '>' + (s || '—') + '</option>';
+        }).join('') +
+      '</select></td>' +
+      '<td>' + timeFieldHTML('entry-timein', entry.timeIn) + '</td>' +
+      '<td>' + timeFieldHTML('entry-timeout', entry.timeOut) + '</td>' +
+      '<td><input type="text" class="entry-notes" value="' + esc(entry.notes || '') + '" placeholder="—" style="min-width:140px;"></td>' +
+      '<td><button type="button" class="btn btn-sm btn-ghost" data-action="clear-entry-row" title="Clear status, times and notes for this day">Clear day</button></td>' +
+    '</tr>';
+  }
+
+  return '<div class="stack">' +
+    '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
+      adminEmpSearchHTML(emp) +
+      '<button class="btn btn-primary" data-action="save-entries">Save Changes</button>' +
+    '</div>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<div class="table-wrap">' +
+      '<table id="entries-editor-table">' +
+        '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Notes</th><th></th></tr></thead>' +
+        '<tbody>' + rows + '</tbody>' +
+      '</table>' +
+    '</div>' +
+  '</div>';
+}
+
+function adminConcernsTab(){
+  var filter = ui.concernFilter;
+  var list = STATE.concerns.slice().sort(function(a,b){ return b.submittedAt.localeCompare(a.submittedAt); });
+  if(filter !== 'all') list = list.filter(function(c){ return c.status === filter; });
+
+  var filters = [['open','Open'],['resolved','Resolved'],['all','All']].map(function(f){
+    var active = filter === f[0] ? ' active' : '';
+    return '<button class="tab' + active + '" data-action="concern-filter" data-filter="' + f[0] + '">' + f[1] + '</button>';
+  }).join('');
+
+  var rows = list.length ? list.map(function(c){
+    var emp = getEmployee(c.empId);
+    var statusPill = c.status === 'open' ? '<span class="pill pill-warn">Open</span>' : '<span class="pill pill-good">Resolved</span>';
+    return '<div class="card-pad concern-admin-row" data-id="' + esc(c.id) + '" style="border:1px solid var(--line); border-radius:10px; padding:14px 16px;">' +
+      '<div class="row" style="justify-content:space-between; align-items:flex-start;">' +
+        '<div>' +
+          '<div style="font-weight:600; font-size:13.5px;">' + esc(emp ? formatName(emp.name) : 'Unknown') + ' · ' + esc(fmtDateShort(c.month, c.day) + ' ' + monthInfo(c.month).year) + '</div>' +
+          '<div class="muted" style="font-size:12.5px; margin-top:2px;">' + esc(c.message) + '</div>' +
+        '</div>' +
+        statusPill +
+      '</div>' +
+      (c.status === 'open' ?
+        '<div class="stack" style="margin-top:10px; gap:8px;">' +
+          '<textarea class="concern-reply" placeholder="Reply to ' + esc(emp ? formatName(emp.name).split(' ')[0] : 'employee') + ' (optional)"></textarea>' +
+          '<div class="row" style="justify-content:flex-end;">' +
+            '<button class="btn btn-sm btn-primary" data-action="resolve-concern" data-id="' + esc(c.id) + '">Mark Resolved</button>' +
+          '</div>' +
+        '</div>'
+        : (c.adminReply ? '<div style="font-size:12.5px; margin-top:8px; padding:8px 10px; background:var(--surface-2); border-radius:7px;"><strong>Reply:</strong> ' + esc(c.adminReply) + '</div>' : '')
+      ) +
+    '</div>';
+  }).join('') : '<p class="empty">Nothing here.</p>';
+
+  return '<div class="stack">' +
+    '<div class="tabs" style="margin-bottom:6px;">' + filters + '</div>' +
+    '<div class="stack" style="gap:10px;">' + rows + '</div>' +
+  '</div>';
+}
+
+/* Sort options for the People & Access employee table (ui.peopleSort).
+   Surname sorts by surnameOf() so the two naming styles in this data
+   ("Surname, First" and plain "First Surname") land in the same
+   alphabetical order instead of the non-comma names sorting by first
+   name. Department/Position group employees together by that field,
+   breaking ties by surname so each group still reads alphabetically.
+   No entry here for "unsorted" — ui.peopleSort starts as '' (the
+   dropdown's blank placeholder option) and adminPeopleTab below leaves
+   the list in its plain STATE.employees order whenever there's no
+   PEOPLE_SORTS entry for the current value, rather than assuming
+   Surname. */
+var PEOPLE_SORTS = {
+  surname: function(a,b){ return surnameOf(a.name).localeCompare(surnameOf(b.name)) || formatName(a.name).localeCompare(formatName(b.name)); },
+  department: function(a,b){ return (a.department||'').localeCompare(b.department||'') || surnameOf(a.name).localeCompare(surnameOf(b.name)); },
+  position: function(a,b){ return (a.position||'').localeCompare(b.position||'') || surnameOf(a.name).localeCompare(surnameOf(b.name)); }
+};
+function adminPeopleTab(){
+  var peopleSort = ui.peopleSort || '';
+  var sortCmp = PEOPLE_SORTS[peopleSort];
+  // A plain <select> rather than the three-button row this used to be —
+  // one dropdown to choose from, no separate button per option. Starts on
+  // the blank placeholder (no sort applied) rather than jumping straight
+  // to Surname, per Ken's request.
+  var sortSelect = '<select id="people-sort-select" style="width:auto; min-width:160px;">' +
+    '<option value=""' + (peopleSort === '' ? ' selected' : '') + '>Default order</option>' +
+    [['surname','Surname'],['department','Department'],['position','Position']].map(function(s){
+      var sel = peopleSort === s[0] ? ' selected' : '';
+      return '<option value="' + s[0] + '"' + sel + '>' + s[1] + '</option>';
+    }).join('') +
+  '</select>';
+  var sortedEmployees = sortCmp ? STATE.employees.slice().sort(sortCmp) : STATE.employees;
+  var empRows = sortedEmployees.map(function(e){
+    var revealed = !!ui.revealedPasscodes[e.id];
+    var passcodeCell;
+    if(!e.passcode){
+      passcodeCell = '<span class="muted">Not set</span>';
+    } else if(revealed){
+      passcodeCell = '<span class="mono">' + esc(e.passcode) + '</span> <button class="btn btn-sm btn-ghost" data-action="toggle-passcode-reveal" data-id="' + esc(e.id) + '">Hide</button>';
+    } else {
+      passcodeCell = '<span class="mono muted">••••••</span> <button class="btn btn-sm btn-ghost" data-action="toggle-passcode-reveal" data-id="' + esc(e.id) + '">Show</button>';
+    }
+    return '<tr>' +
+      '<td>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</td>' +
+      '<td class="muted">' + esc(e.email || '—') + '</td>' +
+      '<td>' + esc(e.department||'') + '</td>' +
+      '<td>' + esc(e.position||'') + '</td>' +
+      '<td><span class="badge-shift">' + esc(e.shift) + '</span></td>' +
+      '<td>' + passcodeCell + '</td>' +
+      '<td>' + (e.passcode ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
+      '<td><button class="btn btn-sm" data-action="edit-employee-open" data-id="' + esc(e.id) + '">Edit</button></td>' +
+      '<td>' + (e.active
+          ? '<button class="btn btn-sm btn-danger" data-action="toggle-employee-active" data-id="' + esc(e.id) + '">Deactivate</button>'
+          : '<button class="btn btn-sm" data-action="toggle-employee-active" data-id="' + esc(e.id) + '">Activate</button>') +
+      '</td>' +
+      '<td><button class="btn btn-sm btn-danger" data-action="delete-employee-open" data-id="' + esc(e.id) + '">Delete</button></td>' +
+    '</tr>';
+  }).join('');
+
+  var adminRows = STATE.admins.map(function(a){
+    var isPrimary = a === STATE.primaryAdmin;
+    var email = (STATE.adminEmails && STATE.adminEmails[a]) || '';
+    return '<tr>' +
+      '<td>' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</td>' +
+      '<td class="muted">' + esc(email || '—') + '</td>' +
+      '<td><button class="btn btn-sm" data-action="edit-admin-open" data-name="' + esc(a) + '">Edit</button></td>' +
+      '<td>' + (isPrimary ? '<span class="muted">Cannot be removed</span>' : '<button class="btn btn-sm btn-danger" data-action="remove-admin" data-name="' + esc(a) + '">Remove</button>') + '</td>' +
+    '</tr>';
+  }).join('');
+
+  return '<div class="stack" style="gap:22px;">' +
+    '<div class="card">' +
+      '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
+        '<h2 style="font-size:17px;">Employees</h2>' +
+        '<button class="btn btn-sm btn-primary" data-action="add-employee-open">+ Add Employee</button>' +
+      '</div>' +
+      '<div class="card-pad row" style="align-items:center; gap:10px; padding-top:0; padding-bottom:12px;">' +
+        '<label class="muted" for="people-sort-select" style="font-size:12px;">Sort by</label>' +
+        sortSelect +
+      '</div>' +
+      '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
+        '<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Shift</th><th>Passcode</th><th></th><th></th><th></th><th></th></tr></thead>' +
+        '<tbody>' + empRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Each person sets their own passcode the first time they open the app. Reset clears it so they can set a new one — use this if someone forgets theirs. Deactivate keeps their full history and blocks them from logging in — they\'ll see a message to email ' + esc(REACTIVATION_EMAIL) + ' for reactivation. Delete is permanent and removes them and all their entries for good.</p></div>' +
+    '</div>' +
+    '<div class="card">' +
+      '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
+        '<h2 style="font-size:17px;">Admins</h2>' +
+        '<button class="btn btn-sm btn-primary" data-action="add-admin-open">+ Add Admin</button>' +
+      '</div>' +
+      '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
+        '<table class="compact"><thead><tr><th>Name</th><th>Email</th><th></th><th></th></tr></thead><tbody>' + adminRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus the shared admin password — email is optional, just for contact purposes. Removing someone here blocks their admin login immediately.</p></div>' +
+    '</div>' +
+  '</div>';
+}
+
+function adminDownloadsTab(){
+  var monthKey = adminMonth();
+  var rows = sortedActiveEmployees().map(function(e){
+    return '<tr><td>' + esc(formatName(e.name)) + '</td>' +
+      '<td><button class="btn btn-sm" data-action="download-emp-timesheet" data-id="' + esc(e.id) + '">Timesheet</button></td>' +
+      '<td><button class="btn btn-sm" data-action="download-emp-attendance" data-id="' + esc(e.id) + '">Attendance</button></td></tr>';
+  }).join('');
+  return '<div class="stack" style="gap:18px;">' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Exports use the month shown at the top of the Admin dashboard — currently <strong>' + esc(monthKeyLabel(monthKey)) + '</strong>. All exports below are styled tables — open with Excel or Google Sheets. Timesheet and Attendance Grid match the SDI Timesheet / Attendance Schedule templates; Summary is our own roll-up with no template to match.</p>' +
+    '<div class="card card-pad row" style="justify-content:space-between;">' +
+      '<div><div style="font-weight:600;">Company-wide exports</div><div class="muted" style="font-size:12.5px;">Every active employee, one file.</div></div>' +
+      '<div class="row"><button class="btn" data-action="download-all-summary">Summary</button><button class="btn" data-action="download-attendance-grid">Attendance Grid</button></div>' +
+    '</div>' +
+    '<div class="card card-pad row" style="justify-content:space-between;">' +
+      '<div><div style="font-weight:600;">Full data backup</div><div class="muted" style="font-size:12.5px;">Saves everything — every employee, entry, admin, and setting — as one file. Keep a recent one on hand in case data ever needs to be restored.</div></div>' +
+      '<div class="row">' +
+        '<button class="btn" data-action="export-backup">Export Backup</button>' +
+        '<label class="btn btn-ghost" for="restore-backup-input" style="cursor:pointer; margin:0;">Restore from Backup<input type="file" id="restore-backup-input" accept="application/json,.json" style="display:none;"></label>' +
+      '</div>' +
+    '</div>' +
+    '<div class="table-wrap">' +
+      '<table><thead><tr><th>Employee</th><th>Timesheet</th><th>Attendance</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ============================================================
+   MODALS
+   ============================================================ */
+function renderModalInto(app){
+  var html = '';
+  if(ui.modal === 'concern'){
+    var emp = getEmployee(session.employeeId);
+    html = modalShell('Flag a concern',
+      '<p class="muted" style="margin:0 0 12px; font-size:13px;">' + esc(fmtDateShort(ui.modalData.month, ui.modalData.day)) + (emp ? ' · ' + esc(formatName(emp.name)) : '') + '</p>' +
+      '<label class="field">What looks wrong? <span class="req">*</span>' +
+        '<textarea id="concern-message" placeholder="e.g. I was marked absent but I worked 10–5 that day"></textarea>' +
+      '</label>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="submit-concern">Submit</button>'
+    );
+  } else if(ui.modal === 'changePasscode'){
+    var pcErr = ui.modalData.pcError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.pcError) + '</p>' : '';
+    html = modalShell('Change my passcode',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Current passcode<input type="password" id="pc-current" autocomplete="current-password"></label>' +
+        '<label class="field">New passcode (4+ characters)<input type="password" id="pc-new-1" autocomplete="new-password"></label>' +
+        '<label class="field">Confirm new passcode<input type="password" id="pc-new-2" autocomplete="new-password"></label>' +
+        pcErr +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="change-passcode-submit">Save</button>'
+    );
+  } else if(ui.modal === 'restoreBackupConfirm'){
+    var pendState = ui.modalData.pendingState || {};
+    var pendCount = Array.isArray(pendState.employees) ? pendState.employees.length : 0;
+    html = modalShell('Restore from backup?',
+      '<p style="margin:0; font-size:14px;">This backup file has <strong>' + pendCount + ' employee' + (pendCount === 1 ? '' : 's') + '</strong>. Restoring will replace <strong>all</strong> current data — for every admin and employee — with what’s in this file. Anything entered since this backup was made will be lost. This can’t be undone from here.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="restore-backup-submit">Restore Backup</button>'
+    );
+  } else if(ui.modal === 'resetPasscodeConfirm'){
+    var rpEmp = getEmployee(ui.modalData.empId);
+    html = modalShell('Reset passcode',
+      '<p style="margin:0; font-size:14px;">Reset the passcode for <strong>' + esc(rpEmp ? formatName(rpEmp.name) : '') + '</strong>? They’ll be asked to set a new one next time they open the app.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="reset-employee-passcode-submit">Reset Passcode</button>'
+    );
+  } else if(ui.modal === 'accountInactive'){
+    html = modalShell('Account inactive',
+      '<p style="margin:0; font-size:14px;">This profile is currently inactive, so it can’t be used to view a timesheet right now. Please email <strong>' + esc(REACTIVATION_EMAIL) + '</strong> to request reactivation.</p>',
+      '<button class="btn btn-primary" data-action="close-modal">OK</button>'
+    );
+  } else if(ui.modal === 'confirmDeleteEmployee'){
+    var delEmp = getEmployee(ui.modalData.empId);
+    html = modalShell('Delete employee permanently',
+      '<p style="margin:0; font-size:14px;">Permanently delete <strong>' + esc(delEmp ? formatName(delEmp.name) : '') + '</strong>? This removes them and every entry ever recorded for them — every month, not just the current one. This can’t be undone. If you might need their history later, use Deactivate instead.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="confirm-delete-employee-submit">Delete Permanently</button>'
+    );
+  } else if(ui.modal === 'addEmployee'){
+    var shiftOptions = [['AM','10:00 AM – 5:00 PM | Mon–Sat'],['PM','12:00 PM – 5:00 PM | Mon–Fri'],['EVE','4:00 PM – 8:00 PM | Fridays Only']]
+      .map(function(s){ return '<option value="' + s[0] + '">' + s[0] + ' — ' + s[1] + '</option>'; }).join('');
+    html = modalShell('Add employee',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Full name <span class="req">*</span><input type="text" id="new-emp-name" placeholder="Last, First"></label>' +
+        '<label class="field">Email<input type="email" id="new-emp-email" placeholder="name@example.com"></label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Department<input type="text" id="new-emp-dept" value="DETAILING"></label>' +
+          '<label class="field">Position<input type="text" id="new-emp-position" placeholder="TRAINEE"></label>' +
+        '</div>' +
+        '<label class="field">Shift<select id="new-emp-shift">' + shiftOptions + '</select></label>' +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="add-employee-submit">Add Employee</button>'
+    );
+  } else if(ui.modal === 'editEmployee'){
+    var editEmp = getEmployee(ui.modalData.empId);
+    html = modalShell('Edit ' + (editEmp ? formatName(editEmp.name) : 'employee'),
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Email<input type="email" id="edit-emp-email" placeholder="name@example.com" value="' + esc(editEmp ? (editEmp.email||'') : '') + '"></label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Department<input type="text" id="edit-emp-dept" value="' + esc(editEmp ? (editEmp.department||'') : '') + '"></label>' +
+          '<label class="field">Position<input type="text" id="edit-emp-position" value="' + esc(editEmp ? (editEmp.position||'') : '') + '"></label>' +
+        '</div>' +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="edit-employee-submit">Save</button>'
+    );
+  } else if(ui.modal === 'confirmRemoveAdmin'){
+    html = modalShell('Remove admin',
+      '<p style="margin:0; font-size:14px;">Remove <strong>' + esc(ui.modalData.name) + '</strong> as an admin? They will no longer be able to log in to admin mode.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="confirm-remove-admin-submit">Remove</button>'
+    );
+  } else if(ui.modal === 'addAdmin'){
+    html = modalShell('Add admin',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Full name <span class="req">*</span><input type="text" id="new-admin-name" placeholder="First Last"></label>' +
+        '<label class="field">Email<input type="email" id="new-admin-email" placeholder="name@example.com"></label>' +
+      '</div>' +
+      '<p class="muted" style="font-size:12px; margin:10px 0 0;">They’ll sign in with this name and the shared admin password. Email is optional, just for contact purposes.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="add-admin-submit">Add Admin</button>'
+    );
+  } else if(ui.modal === 'editAdmin'){
+    var editAdminName = ui.modalData.name || '';
+    var editAdminEmail = (STATE.adminEmails && STATE.adminEmails[editAdminName]) || '';
+    html = modalShell('Edit admin email',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Name<input type="text" value="' + esc(editAdminName) + '" disabled></label>' +
+        '<label class="field">Email<input type="email" id="edit-admin-email" placeholder="name@example.com" value="' + esc(editAdminEmail) + '"></label>' +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="edit-admin-submit">Save</button>'
+    );
+  } else {
+    return;
+  }
+  var wrap = document.createElement('div');
+  wrap.innerHTML = html;
+  app.appendChild(wrap.firstChild);
+}
+
+function modalShell(title, body, foot){
+  return '<div class="modal-backdrop" data-action="modal-backdrop">' +
+    '<div class="modal" role="dialog" aria-modal="true" aria-label="' + esc(title) + '">' +
+      '<div class="modal-head"><h2 style="font-size:19px;">' + esc(title) + '</h2></div>' +
+      '<div class="modal-body">' + body + '</div>' +
+      '<div class="modal-foot">' + foot + '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function wireInputsAfterRender(){
+  var peopleSortSelect = $('people-sort-select');
+  if(peopleSortSelect){
+    peopleSortSelect.addEventListener('change', function(){
+      ui.peopleSort = peopleSortSelect.value;
+      render();
+    });
+  }
+  var adminEmpSearch = $('admin-emp-search');
+  if(adminEmpSearch){
+    adminEmpSearch.addEventListener('focus', function(){
+      renderAdminEmpResults(adminEmpSearch.value);
+    });
+    adminEmpSearch.addEventListener('input', function(){
+      renderAdminEmpResults(adminEmpSearch.value);
+    });
+    adminEmpSearch.addEventListener('keydown', function(e){
+      var box = $('admin-emp-results');
+      if(e.key === 'Escape'){
+        if(box) box.hidden = true;
+        return;
+      }
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        if(box && !box.hidden){
+          var first = box.querySelector('.autocomplete-item');
+          if(first) pickAdminEmployee(first.getAttribute('data-emp-id'));
+        }
+      }
+    });
+    adminEmpSearch.addEventListener('blur', function(){
+      // delay so a click/mousedown on a result can register first
+      setTimeout(function(){
+        var box = $('admin-emp-results');
+        if(box) box.hidden = true;
+      }, 150);
+    });
+  }
+  var adminEmpResults = $('admin-emp-results');
+  if(adminEmpResults){
+    adminEmpResults.addEventListener('mousedown', function(e){
+      var item = e.target.closest('.autocomplete-item');
+      if(item) pickAdminEmployee(item.getAttribute('data-emp-id'));
+    });
+  }
+
+  var landingSearch = $('landing-emp-search');
+  if(landingSearch){
+    landingSearch.addEventListener('focus', function(){
+      renderLandingResults(landingSearch.value);
+    });
+    landingSearch.addEventListener('input', function(){
+      ui.landingSearch.query = landingSearch.value;
+      // typing invalidates a prior pick unless the text still matches it exactly
+      var emp = ui.landingSearch.selectedId ? getEmployee(ui.landingSearch.selectedId) : null;
+      if(!emp || formatName(emp.name) !== landingSearch.value){
+        ui.landingSearch.selectedId = null;
+        var hidden = $('landing-emp-selected-id');
+        if(hidden) hidden.value = '';
+      }
+      renderLandingResults(landingSearch.value);
+    });
+    landingSearch.addEventListener('keydown', function(e){
+      var box = $('landing-emp-results');
+      if(e.key === 'Escape'){
+        if(box) box.hidden = true;
+        return;
+      }
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        if(box && !box.hidden){
+          var first = box.querySelector('.autocomplete-item');
+          if(first) pickLandingEmployee(first.getAttribute('data-emp-id'));
+        }
+      }
+    });
+    landingSearch.addEventListener('blur', function(){
+      // delay so a click/mousedown on a result can register first
+      setTimeout(function(){
+        var box = $('landing-emp-results');
+        if(box) box.hidden = true;
+      }, 150);
+    });
+  }
+  var landingResults = $('landing-emp-results');
+  if(landingResults){
+    // mousedown (not click) fires before the input's blur handler runs,
+    // so the pick registers before the results box gets hidden.
+    landingResults.addEventListener('mousedown', function(e){
+      var item = e.target.closest('.autocomplete-item');
+      if(item) pickLandingEmployee(item.getAttribute('data-emp-id'));
+    });
+  }
+
+  var firstInput = document.querySelector('.modal input, .modal textarea, .modal select');
+  if(firstInput) firstInput.focus();
+
+  wireEnterSubmit(['admin-login-pass'], 'admin-login-submit');
+  wireEnterSubmit(['setup-passcode-1', 'setup-passcode-2'], 'employee-setup-submit');
+  wireEnterSubmit(['auth-passcode'], 'employee-auth-submit');
+  wireModalEnterSubmit();
+
+  var restoreInput = $('restore-backup-input');
+  if(restoreInput){
+    restoreInput.addEventListener('change', function(){
+      var file = restoreInput.files && restoreInput.files[0];
+      if(!file) return;
+      var reader = new FileReader();
+      reader.onload = function(){
+        var parsed;
+        try{ parsed = JSON.parse(reader.result); }catch(parseErr){
+          toast('That file isn’t valid backup data.', 'error');
+          return;
+        }
+        if(!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.employees) || typeof parsed.entries !== 'object'){
+          toast('That file doesn’t look like an SDI Timesheet backup.', 'error');
+          return;
+        }
+        ui.modal = 'restoreBackupConfirm';
+        ui.modalData = { pendingState: parsed };
+        render();
+      };
+      reader.onerror = function(){ toast('Couldn’t read that file.', 'error'); };
+      reader.readAsText(file);
+    });
+  }
+}
+
+/* Lets Enter submit a field the same way clicking its button does, for the
+   handful of single-field/short forms (login, passcode setup/entry) where
+   users expect that. */
+function wireEnterSubmit(ids, action){
+  ids.forEach(function(id){
+    var el = $(id);
+    if(!el) return;
+    el.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        var fn = handlers[action];
+        if(fn) fn();
+      }
+    });
+  });
+}
+
+/* Lets Enter submit whichever modal is open, from any of its single-line
+   fields — same idea as wireEnterSubmit but modal-generic instead of a
+   fixed id list, since every modal already follows one shape: a Cancel
+   button plus exactly one primary/danger button carrying the real
+   data-action. Textareas are deliberately left out (Enter should insert a
+   newline there, e.g. the "Raise a concern" modal), and this only wires
+   whatever modal is on screen right now, so it's safe to call on every
+   render — a modal with no matching button or fields is a no-op. */
+function wireModalEnterSubmit(){
+  var modalEl = document.querySelector('.modal');
+  if(!modalEl) return;
+  var primaryBtn = modalEl.querySelector('[data-action]:not([data-action="close-modal"])');
+  if(!primaryBtn) return;
+  var action = primaryBtn.getAttribute('data-action');
+  var fields = modalEl.querySelectorAll('input[type="text"], input[type="email"], input[type="password"], input[type="number"]');
+  fields.forEach(function(el){
+    el.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){
+        e.preventDefault();
+        var fn = handlers[action];
+        if(fn) fn();
+      }
+    });
+  });
+}
+
+/* ============================================================
+   ACTION HANDLERS
+   ============================================================ */
+var handlers = {
+  'reload-page': function(){ location.reload(); },
+  'go-landing': function(){
+    session = { role: null, employeeId: null, adminName: null };
+    ui.landingSearch = { query: '', selectedId: null, error: null };
+    saveSession(); ui.modal = null; ui.modalData = {}; render();
+  },
+  'landing-view-employee': function(){
+    var empId = ui.landingSearch.selectedId;
+    if(!empId){
+      ui.landingSearch.error = 'Search for your name and pick it from the list first.';
+      render();
+      return;
+    }
+    var emp = getEmployee(empId);
+    if(!emp) return;
+    if(!emp.active){
+      ui.landingSearch = { query: '', selectedId: null, error: null };
+      ui.modal = 'accountInactive';
+      ui.modalData = {};
+      render();
+      return;
+    }
+    ui.modalData = {};
+    if(emp.passcode){
+      session = { role: 'employee-auth', pendingEmployeeId: emp.id, employeeId: null, adminName: null };
+    } else {
+      session = { role: 'employee-setup', pendingEmployeeId: emp.id, employeeId: null, adminName: null };
+    }
+    ui.landingSearch = { query: '', selectedId: null, error: null };
+    saveSession(); render();
+  },
+  'employee-setup-submit': function(){
+    var p1 = ($('setup-passcode-1') || {}).value || '';
+    var p2 = ($('setup-passcode-2') || {}).value || '';
+    if(p1.length < 4){ ui.modalData.passcodeError = 'Passcode must be at least 4 characters.'; render(); return; }
+    if(p1 !== p2){ ui.modalData.passcodeError = 'Passcodes don’t match.'; render(); return; }
+    var empId = session.pendingEmployeeId;
+    ui.modalData.passcodeError = null;
+    // Move the session into the dashboard state first, so if publish()
+    // reloads this view, sessionStorage already holds the post-login state.
+    session = { role: 'employee', employeeId: empId, adminName: null };
+    persist(function(s){
+      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
+      if(e) e.passcode = p1;
+    }, { successMsg: 'Access created' });
+  },
+  'employee-auth-submit': function(){
+    var pass = ($('auth-passcode') || {}).value || '';
+    var emp = getEmployee(session.pendingEmployeeId);
+    if(!emp){ return; }
+    if(pass !== emp.passcode){
+      ui.modalData.passcodeError = 'That passcode doesn’t match. Ask an admin to reset it if you forgot.';
+      render(); return;
+    }
+    ui.modalData.passcodeError = null;
+    session = { role: 'employee', employeeId: emp.id, adminName: null };
+    saveSession(); render();
+  },
+  'go-admin-login': function(){
+    session.role = 'admin-login'; ui.modalData = { loginError: null }; render();
+  },
+  'admin-login-submit': function(){
+    var name = $('admin-login-name') ? $('admin-login-name').value : '';
+    var pass = $('admin-login-pass') ? $('admin-login-pass').value : '';
+    ui.modalData.lastTriedName = name;
+    if(STATE.admins.indexOf(name) === -1){
+      ui.modalData.loginError = 'That name is not on the admin list.'; render(); return;
+    }
+    if(pass !== STATE.adminPassword){
+      ui.modalData.loginError = 'Incorrect password.'; render(); return;
+    }
+    ui.modalData.loginError = null;
+    session = { role: 'admin', employeeId: null, adminName: name };
+    ui.adminTab = 'overview';
+    saveSession(); render();
+  },
+  'admin-logout': function(){
+    session = { role: null, employeeId: null, adminName: null };
+    saveSession(); render();
+  },
+  'open-concern-modal': function(el){
+    ui.modal = 'concern'; ui.modalData = { day: parseInt(el.dataset.day, 10), month: empMonth() }; render();
+  },
+  'close-modal': function(){ ui.modal = null; render(); },
+  'modal-backdrop': function(el, e){ if(e.target === el) { ui.modal = null; render(); } },
+  'punch-time-in': function(){
+    var emp = getEmployee(session.employeeId);
+    if(!emp) return;
+    if(clockLooksTampered()){
+      toast('Your device’s clock changed since this page opened — reload the page and try again.', 'error');
+      return;
+    }
+    var monthKey = currentMonthKey();
+    var day = todayDayNum(monthKey);
+    if(day === -1) return;
+    var existing = getEntry(emp.id, monthKey, day);
+    if(existing && existing.timeIn){ toast('You’re already clocked in today.', 'error'); return; }
+    var stamp = nowTimeHHMM();
+    persist(function(s){
+      setEntry(emp.id, monthKey, day, { timeIn: stamp, status: (existing && existing.status) === 'A' ? 'A' : 'P' });
+    }, { successMsg: 'Clocked in at ' + fmtTime12(stamp) });
+  },
+  'punch-time-out': function(){
+    var emp = getEmployee(session.employeeId);
+    if(!emp) return;
+    if(clockLooksTampered()){
+      toast('Your device’s clock changed since this page opened — reload the page and try again.', 'error');
+      return;
+    }
+    var monthKey = currentMonthKey();
+    var day = todayDayNum(monthKey);
+    if(day === -1) return;
+    var existing = getEntry(emp.id, monthKey, day);
+    if(!existing || !existing.timeIn){ toast('Clock in first.', 'error'); return; }
+    if(existing.timeOut){ toast('You’re already clocked out today.', 'error'); return; }
+    var stamp = nowTimeHHMM();
+    persist(function(s){
+      setEntry(emp.id, monthKey, day, { timeOut: stamp });
+    }, { successMsg: 'Clocked out at ' + fmtTime12(stamp) });
+  },
+  'submit-concern': function(){
+    var ta = $('concern-message');
+    var msg = ta ? ta.value.trim() : '';
+    if(!msg){ toast('Please describe the issue first.', 'error'); return; }
+    var day = ui.modalData.day;
+    var month = ui.modalData.month;
+    ui.modal = null;
+    persist(function(s){
+      s.concerns.push({
+        id: uid('concern'), empId: session.employeeId, day: day, month: month, message: msg,
+        status: 'open', submittedAt: new Date().toISOString(), resolvedAt: null, adminReply: null
+      });
+    }, { successMsg: 'Concern submitted' });
+  },
+  'download-my-timesheet': function(){
+    var emp = getEmployee(session.employeeId); if(!emp) return;
+    var mk = empMonth();
+    offerDownload('SDI_' + slugify(formatName(emp.name)) + '_Timesheet_' + mk, employeeTimesheetExcelHTML(emp, mk), 'html');
+  },
+  'download-my-attendance': function(){
+    var emp = getEmployee(session.employeeId); if(!emp) return;
+    var mk = empMonth();
+    offerDownload('SDI_' + slugify(formatName(emp.name)) + '_Attendance_' + mk, employeeAttendanceExcelHTML(emp, mk), 'html');
+  },
+  'change-passcode-open': function(){ ui.modal = 'changePasscode'; ui.modalData = {}; render(); },
+  'change-passcode-submit': function(){
+    var emp = getEmployee(session.employeeId); if(!emp) return;
+    var cur = ($('pc-current') || {}).value || '';
+    var n1 = ($('pc-new-1') || {}).value || '';
+    var n2 = ($('pc-new-2') || {}).value || '';
+    if(cur !== emp.passcode){ ui.modalData.pcError = 'Current passcode is incorrect.'; render(); return; }
+    if(n1.length < 4){ ui.modalData.pcError = 'New passcode must be at least 4 characters.'; render(); return; }
+    if(n1 !== n2){ ui.modalData.pcError = 'New passcodes don’t match.'; render(); return; }
+    ui.modalData.pcError = null;
+    ui.modal = null;
+    var empId = emp.id;
+    persist(function(s){
+      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
+      if(e) e.passcode = n1;
+    }, { successMsg: 'Passcode changed' });
+  },
+  'month-prev': function(el){
+    if(el.dataset.scope === 'employee'){ ui.employeeMonth = shiftMonthKey(empMonth(), -1); }
+    else { ui.adminMonth = shiftMonthKey(adminMonth(), -1); }
+    render();
+  },
+  'month-next': function(el){
+    if(el.dataset.scope === 'employee'){ ui.employeeMonth = shiftMonthKey(empMonth(), 1); }
+    else { ui.adminMonth = shiftMonthKey(adminMonth(), 1); }
+    render();
+  },
+  'month-today': function(el){
+    if(el.dataset.scope === 'employee'){ ui.employeeMonth = currentMonthKey(); }
+    else { ui.adminMonth = currentMonthKey(); }
+    render();
+  },
+  'admin-tab': function(el){ ui.adminTab = el.dataset.tab; render(); },
+  'overview-shift-filter': function(el){ ui.overviewShift = el.dataset.shift; render(); },
+  /* Deliberately does NOT call render(): the Edit Entries table holds a
+     whole month of unsaved edits in plain DOM inputs (nothing is written
+     back to STATE until Save Changes), same as typing into any of its
+     other fields. A render() here would redraw the table from STATE and
+     silently wipe out every other row's in-progress edit, not just clear
+     this one field. */
+  'clear-time-field': function(el){
+    var td = el.closest('td');
+    var input = td && td.querySelector('input[type="time"]');
+    if(input){ input.value = ''; input.focus(); }
+  },
+  /* Same no-render reasoning as clear-time-field above — this only
+     touches its own row's inputs directly in the DOM. */
+  'clear-entry-row': function(el){
+    var tr = el.closest('tr');
+    if(!tr) return;
+    var status = tr.querySelector('.entry-status');
+    var timeIn = tr.querySelector('.entry-timein');
+    var timeOut = tr.querySelector('.entry-timeout');
+    var notes = tr.querySelector('.entry-notes');
+    if(status) status.value = '';
+    if(timeIn) timeIn.value = '';
+    if(timeOut) timeOut.value = '';
+    if(notes) notes.value = '';
+  },
+  'admin-goto-entries': function(el){ ui.adminEmpId = el.dataset.id; ui.adminTab = 'entries'; render(); },
+  'save-entries': function(){
+    var empId = ui.adminEmpId;
+    if(!empId) return;
+    var monthKey = adminMonth();
+    var table = $('entries-editor-table');
+    if(!table) return;
+    var patches = {};
+    table.querySelectorAll('tbody tr').forEach(function(tr){
+      var day = tr.getAttribute('data-day');
+      var status = tr.querySelector('.entry-status').value || null;
+      var timeIn = tr.querySelector('.entry-timein').value || null;
+      var timeOut = tr.querySelector('.entry-timeout').value || null;
+      var notes = tr.querySelector('.entry-notes').value || null;
+      patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, notes: notes };
+    });
+    persist(function(s){
+      Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); });
+    }, { successMsg: 'Entries saved' });
+  },
+  'concern-filter': function(el){ ui.concernFilter = el.dataset.filter; render(); },
+  'resolve-concern': function(el){
+    var id = el.dataset.id;
+    var row = el.closest('.concern-admin-row');
+    var reply = row ? (row.querySelector('.concern-reply') || {}).value : '';
+    persist(function(s){
+      var c = s.concerns.filter(function(x){ return x.id === id; })[0];
+      if(c){ c.status = 'resolved'; c.resolvedAt = new Date().toISOString(); c.adminReply = (reply || '').trim() || null; }
+    }, { successMsg: 'Concern resolved' });
+  },
+  'add-employee-open': function(){ ui.modal = 'addEmployee'; render(); },
+  'add-employee-submit': function(){
+    var name = ($('new-emp-name') || {}).value || '';
+    name = name.trim();
+    if(!name){ toast('Please enter a name.', 'error'); return; }
+    var email = (($('new-emp-email')||{}).value || '').trim() || null;
+    var dept = (($('new-emp-dept')||{}).value || '').trim() || null;
+    var position = (($('new-emp-position')||{}).value || '').trim() || null;
+    var shift = ($('new-emp-shift')||{}).value || 'AM';
+    var shiftLabels = { AM: '10:00 AM – 5:00 PM | Mon–Sat', PM: '12:00 PM – 5:00 PM | Mon–Fri', EVE: '4:00 PM – 8:00 PM | Fridays Only' };
+    var baseId = slugify(name) || uid('emp');
+    var id = baseId, n = 1;
+    while(getEmployee(id)){ id = baseId + '-' + (++n); }
+    ui.modal = null;
+    persist(function(s){
+      s.employees.push({ id: id, name: name, email: email, department: dept, position: position, manager: s.primaryAdmin, shift: shift, shiftLabel: shiftLabels[shift], active: true, passcode: null });
+      s.entries[id] = {};
+    }, { successMsg: 'Employee added' });
+  },
+  'edit-employee-open': function(el){
+    ui.modal = 'editEmployee'; ui.modalData = { empId: el.dataset.id }; render();
+  },
+  'edit-employee-submit': function(){
+    var id = ui.modalData.empId;
+    var email = (($('edit-emp-email')||{}).value || '').trim() || null;
+    var dept = (($('edit-emp-dept')||{}).value || '').trim() || null;
+    var position = (($('edit-emp-position')||{}).value || '').trim() || null;
+    ui.modal = null;
+    persist(function(s){
+      var e = s.employees.filter(function(x){ return x.id === id; })[0];
+      if(e){ e.email = email; e.department = dept; e.position = position; }
+    }, { successMsg: 'Employee updated' });
+  },
+  'toggle-employee-active': function(el){
+    var id = el.dataset.id;
+    persist(function(s){
+      var e = s.employees.filter(function(x){ return x.id === id; })[0];
+      if(e) e.active = !e.active;
+    }, { successMsg: 'Updated' });
+  },
+  'delete-employee-open': function(el){
+    ui.modal = 'confirmDeleteEmployee'; ui.modalData = { empId: el.dataset.id }; render();
+  },
+  'confirm-delete-employee-submit': function(){
+    var id = ui.modalData.empId;
+    ui.modal = null;
+    persist(function(s){
+      s.employees = s.employees.filter(function(x){ return x.id !== id; });
+      delete s.entries[id];
+    }, { successMsg: 'Employee deleted' });
+  },
+  'toggle-passcode-reveal': function(el){
+    var id = el.dataset.id;
+    ui.revealedPasscodes[id] = !ui.revealedPasscodes[id];
+    render();
+  },
+  'reset-employee-passcode': function(el){
+    ui.modal = 'resetPasscodeConfirm'; ui.modalData = { empId: el.dataset.id }; render();
+  },
+  'reset-employee-passcode-submit': function(){
+    var empId = ui.modalData.empId;
+    ui.modal = null;
+    delete ui.revealedPasscodes[empId];
+    persist(function(s){
+      var e = s.employees.filter(function(x){ return x.id === empId; })[0];
+      if(e) e.passcode = null;
+    }, { successMsg: 'Passcode reset' });
+  },
+  'add-admin-open': function(){ ui.modal = 'addAdmin'; render(); },
+  'add-admin-submit': function(){
+    var name = (($('new-admin-name')||{}).value || '').trim();
+    var email = (($('new-admin-email')||{}).value || '').trim() || null;
+    if(!name){ toast('Please enter a name.', 'error'); return; }
+    if(STATE.admins.indexOf(name) !== -1){ toast('That person is already an admin.', 'error'); return; }
+    ui.modal = null;
+    persist(function(s){
+      s.admins.push(name);
+      if(!s.adminEmails) s.adminEmails = {};
+      if(email) s.adminEmails[name] = email;
+    }, { successMsg: 'Admin added' });
+  },
+  'edit-admin-open': function(el){
+    ui.modal = 'editAdmin'; ui.modalData = { name: el.dataset.name }; render();
+  },
+  'edit-admin-submit': function(){
+    var name = ui.modalData.name;
+    var email = (($('edit-admin-email')||{}).value || '').trim() || null;
+    ui.modal = null;
+    persist(function(s){
+      if(!s.adminEmails) s.adminEmails = {};
+      if(email) s.adminEmails[name] = email; else delete s.adminEmails[name];
+    }, { successMsg: 'Admin updated' });
+  },
+  'remove-admin': function(el){
+    var name = el.dataset.name;
+    if(name === STATE.primaryAdmin) return;
+    ui.modal = 'confirmRemoveAdmin'; ui.modalData = { name: name }; render();
+  },
+  'confirm-remove-admin-submit': function(){
+    var name = ui.modalData.name;
+    ui.modal = null;
+    persist(function(s){
+      s.admins = s.admins.filter(function(a){ return a !== name; });
+      if(s.adminEmails) delete s.adminEmails[name];
+    }, { successMsg: 'Admin removed' });
+  },
+  'download-emp-timesheet': function(el){
+    var emp = getEmployee(el.dataset.id); if(!emp) return;
+    var mk = adminMonth();
+    offerDownload('SDI_' + slugify(formatName(emp.name)) + '_Timesheet_' + mk, employeeTimesheetExcelHTML(emp, mk), 'html');
+  },
+  'download-emp-attendance': function(el){
+    var emp = getEmployee(el.dataset.id); if(!emp) return;
+    var mk = adminMonth();
+    offerDownload('SDI_' + slugify(formatName(emp.name)) + '_Attendance_' + mk, employeeAttendanceExcelHTML(emp, mk), 'html');
+  },
+  'download-all-summary': function(){ var mk = adminMonth(); offerDownload('SDI_Summary_' + mk, allEmployeesSummaryExcelHTML(mk), 'html'); },
+  'download-attendance-grid': function(){ var mk = adminMonth(); offerDownload('SDI_Attendance_Grid_' + mk, attendanceGridExcelHTML(mk), 'html'); },
+  'export-backup': function(){
+    var json = JSON.stringify(STATE, null, 2);
+    var stamp = new Date().toISOString().slice(0, 10);
+    offerDownload('SDI_Timesheet_Backup_' + stamp, json, 'json');
+  },
+  'restore-backup-submit': function(){
+    var pending = ui.modalData.pendingState;
+    ui.modal = null;
+    ui.modalData = {};
+    if(!pending) return;
+    persist(function(s){
+      Object.keys(s).forEach(function(k){ delete s[k]; });
+      Object.keys(pending).forEach(function(k){ s[k] = pending[k]; });
+    }, { successMsg: 'Data restored from backup' });
+  }
+};
+
+document.addEventListener('click', function(e){
+  var el = e.target.closest('[data-action]');
+  if(!el) return;
+  var fn = handlers[el.dataset.action];
+  if(fn) fn(el, e);
+});
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+if(BOOT_FATAL_NOTE){
+  // Nothing usable to render an app around — show the recovery screen
+  // directly rather than letting downstream code touch an empty STATE.
+  var bootApp = $('app');
+  if(bootApp) bootApp.innerHTML = renderFatalErrorHTML(BOOT_FATAL_NOTE);
+} else {
+  render();
+  if(BOOT_RECOVERY_NOTE) toast(BOOT_RECOVERY_NOTE, 'error');
+}
+console.log('SDI Timesheet: ready', (STATE.employees || []).length, 'employees');
+})();
+
+</script>
