@@ -1214,6 +1214,13 @@ function shiftInfo(code){ return (STATE.shifts && STATE.shifts[code]) || {}; }
 function shiftName(code){ return shiftInfo(code).name || code; }
 function shiftScheduleLabel(code){ return shiftInfo(code).scheduleLabel || SHIFT_LABELS[code] || ''; }
 function shiftRequiredTimeIn(code){ return shiftInfo(code).requiredTimeIn || null; }
+function toMinutesOfDay(hhmm){
+  if(!hhmm) return null;
+  var p = String(hhmm).split(':');
+  var h = parseInt(p[0], 10), m = parseInt(p[1], 10);
+  if(isNaN(h) || isNaN(m)) return null;
+  return h * 60 + m;
+}
 function shiftWorkDays(code){
   var wd = shiftInfo(code).workDays;
   if(Array.isArray(wd) && wd.length) return wd.slice();
@@ -1948,7 +1955,7 @@ function adminEntriesTab(){
       adminEmpSearchHTML(emp) +
       '<button class="btn btn-primary" data-action="save-entries">Save Changes</button>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. An employee\'s own clock-in is marked Late automatically when it\'s past their shift\'s required time in (set in People &amp; Access); set Status to Late here to mark a day late by hand, with how many minutes in the Min Late column. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand. Type your own number into Min Late alongside picking Late yourself only if you want to override that calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
     '<div class="table-wrap">' +
       '<table id="entries-editor-table">' +
         '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Notes</th><th></th></tr></thead>' +
@@ -2871,6 +2878,8 @@ var handlers = {
     var monthKey = adminMonth();
     var table = $('entries-editor-table');
     if(!table) return;
+    var emp = getEmployee(empId);
+    var requiredTimeIn = emp ? shiftRequiredTimeIn(emp.shift) : null;
     var patches = {};
     table.querySelectorAll('tbody tr').forEach(function(tr){
       var day = tr.getAttribute('data-day');
@@ -2879,6 +2888,17 @@ var handlers = {
       var timeOut = tr.querySelector('.entry-timeout').value || null;
       var minLateVal = tr.querySelector('.entry-minlate').value;
       var minutesLate = (status === 'L' && minLateVal !== '') ? parseInt(minLateVal, 10) : null;
+      // Auto-detect lateness from the typed-in time the same way an
+      // employee's own punch does, so admins don't have to remember to
+      // pick "Late" by hand every time they type a time past the shift's
+      // required time-in. A status the admin explicitly set to Absent is
+      // left alone; a Min Late the admin already typed by hand (alongside
+      // picking Late themselves) is treated as a deliberate manual
+      // override and left as typed, not recalculated.
+      if(status !== 'A' && minutesLate === null && timeIn && requiredTimeIn){
+        var diff = toMinutesOfDay(timeIn) - toMinutesOfDay(requiredTimeIn);
+        if(diff > 0){ status = 'L'; minutesLate = diff; }
+      }
       var notes = tr.querySelector('.entry-notes').value || null;
       patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, minutesLate: minutesLate, notes: notes };
     });
