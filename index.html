@@ -279,7 +279,7 @@ try{
 // code that runs before the fatal screen replaces #app (toast(), etc.)
 // doesn't itself throw on a missing field.
 if(!STATE || typeof STATE !== 'object'){
-  STATE = { orgName: 'Steel Drafting Innovations', primaryAdmin: null, adminPassword: null, admins: [], adminEmails: {}, employees: [], entries: {}, concerns: [], concernSeq: 1 };
+  STATE = { orgName: 'Steel Drafting Innovations', primaryAdmin: null, adminPassword: null, admins: [], adminEmails: {}, employees: [], entries: {}, concerns: [], concernSeq: 1, shifts: {}, notifications: [], myNotifications: [] };
 }
 // Admins are stored as plain name strings (used directly for session/login
 // checks throughout), with an optional email kept separately keyed by name
@@ -431,21 +431,27 @@ function applyBootstrapState(data){
   STATE.employees = data.employees || [];
   STATE.entries = {};
   STATE.concerns = [];
+  STATE.shifts = data.shifts || {};
+  STATE.notifications = [];
+  STATE.myNotifications = [];
 }
 function applyServerState(data){
   STATE.orgName = data.orgName;
   STATE.primaryAdmin = data.primaryAdmin;
+  STATE.shifts = data.shifts || STATE.shifts || {};
   if(data.role === 'admin'){
     STATE.admins = data.admins || [];
     STATE.adminEmails = data.adminEmails || {};
     STATE.employees = data.employees || [];
     STATE.entries = data.entries || {};
     STATE.concerns = data.concerns || [];
+    STATE.notifications = data.notifications || [];
   } else if(data.role === 'employee'){
     STATE.employees = [data.employee];
     STATE.entries = {};
     STATE.entries[data.employee.id] = data.myEntries || {};
     STATE.concerns = data.myConcerns || [];
+    STATE.myNotifications = data.myNotifications || [];
   }
 }
 
@@ -516,7 +522,7 @@ function loadInitialData(){
    instead lands back on the same tab, same employee, same month —
    the reload still happens, but it no longer feels like losing your
    place. Restored once at boot, saved right before every publish. */
-var UI_STATE_KEYS = ['adminTab', 'adminEmpId', 'adminMonth', 'employeeMonth', 'overviewShift', 'concernFilter', 'peopleSort'];
+var UI_STATE_KEYS = ['adminTab', 'adminEmpId', 'adminMonth', 'employeeMonth', 'overviewShift', 'concernFilter', 'peopleSort', 'notifFilter'];
 function restoreUiState(target){
   try{
     var saved = sessionStorage.getItem('sdi_ui');
@@ -701,17 +707,18 @@ function setEntry(empId, monthKey, day, patch){
 }
 function monthTotals(empId, monthKey){
   var mi = monthInfo(monthKey);
-  var daysPresent=0, daysAbsent=0, totalHrs=0, regHrs=0, otHrs=0;
+  var daysPresent=0, daysAbsent=0, daysLate=0, minutesLateTotal=0, totalHrs=0, regHrs=0, otHrs=0;
   for(var d=1; d<=mi.daysInMonth; d++){
     var entry = getEntry(empId, monthKey, d);
     if(!entry) continue;
     if(entry.status === 'P') daysPresent++;
+    if(entry.status === 'L'){ daysPresent++; daysLate++; minutesLateTotal += entry.minutesLate || 0; }
     if(entry.status === 'A') daysAbsent++;
     var h = computeHours(entry.timeIn, entry.timeOut);
     if(h.total !== null){ totalHrs += h.total; regHrs += h.reg; otHrs += h.ot; }
   }
   return {
-    daysPresent: daysPresent, daysAbsent: daysAbsent,
+    daysPresent: daysPresent, daysAbsent: daysAbsent, daysLate: daysLate, minutesLateTotal: minutesLateTotal,
     totalHrs: Math.round(totalHrs*100)/100, regHrs: Math.round(regHrs*100)/100, otHrs: Math.round(otHrs*100)/100
   };
 }
@@ -1152,7 +1159,7 @@ function surnameOf(name){
    ============================================================ */
 var ui = {
   adminTab: 'overview', modal: null, modalData: {}, adminEmpId: null, concernFilter: 'open', overviewShift: 'all',
-  employeeMonth: null, adminMonth: null, peopleSort: '',
+  employeeMonth: null, adminMonth: null, peopleSort: '', notifFilter: 'all',
   landingSearch: { query: '', selectedId: null, error: null }
 };
 restoreUiState(ui); // see "UI STATE" above — carries tab/employee/month across the save-triggered reload
@@ -1169,6 +1176,17 @@ function monthNavHTML(dataScope, monthKey){
 }
 
 var SHIFT_LABELS = { AM: '10:00 AM – 5:00 PM (Mon–Sat)', PM: '12:00 PM – 5:00 PM (Mon–Fri)', EVE: '4:00 PM – 8:00 PM (Fridays)' };
+/* Shift codes (AM/PM/EVE) stay fixed — they drive the Mon-Sat/Mon-Fri/
+   Fridays-only work-day logic in isShiftWorkDay(). What admins CAN rename
+   (per Ken's request) is the shift's display name and its required
+   clock-in time, both editable from People & Access and stored server-side
+   in STATE.shifts (keyed by code). These helpers fall back to the code
+   itself / the constant above whenever that data hasn't loaded yet. */
+var SHIFT_CODES = ['AM', 'PM', 'EVE'];
+function shiftInfo(code){ return (STATE.shifts && STATE.shifts[code]) || {}; }
+function shiftName(code){ return shiftInfo(code).name || code; }
+function shiftScheduleLabel(code){ return shiftInfo(code).scheduleLabel || SHIFT_LABELS[code] || ''; }
+function shiftRequiredTimeIn(code){ return shiftInfo(code).requiredTimeIn || null; }
 /* Search-bar/autocomplete field for picking an employee on the Admin ->
    Edit Entries tab — same interaction pattern as the landing page's
    employee search, but selection is immediate (no "Continue" step) since
@@ -1228,7 +1246,7 @@ function renderAdminEmpResults(query){
   box.innerHTML = matches.map(function(e){
     return '<div class="autocomplete-item" data-emp-id="' + esc(e.id) + '" tabindex="0">' +
       '<span>' + esc(formatName(e.name)) + '</span>' +
-      '<span class="badge-shift">' + esc(e.shift) + '</span>' +
+      '<span class="badge-shift">' + esc(shiftName(e.shift)) + '</span>' +
     '</div>';
   }).join('');
   box.hidden = false;
@@ -1416,7 +1434,7 @@ function renderLandingResults(query){
     return;
   }
   box.innerHTML = matches.map(function(e){
-    var badge = e.active ? ('<span class="badge-shift">' + esc(e.shift) + '</span>') : '<span class="pill pill-off">Inactive</span>';
+    var badge = e.active ? ('<span class="badge-shift">' + esc(shiftName(e.shift)) + '</span>') : '<span class="pill pill-off">Inactive</span>';
     return '<div class="autocomplete-item" data-emp-id="' + esc(e.id) + '" tabindex="0">' +
       '<span>' + esc(formatName(e.name)) + '</span>' +
       badge +
@@ -1549,7 +1567,7 @@ function punchCardHTML(emp, monthKey, today){
     return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
       '<div>' +
         '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
-        '<div style="font-size:13px;">Clocked in at <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong></div>' +
+        '<div class="row" style="gap:8px; align-items:center; font-size:13px;">Clocked in at <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong>' + (entry.status === 'L' ? statusPillHTML('L', entry.minutesLate) : '') + '</div>' +
       '</div>' +
       '<button class="btn btn-primary" data-action="punch-time-out">Time Out</button>' +
     '</div>';
@@ -1578,7 +1596,7 @@ function viewEmployeeDash(emp){
   for(var d=1; d<=mi.daysInMonth; d++){
     var entry = getEntry(emp.id, monthKey, d) || {};
     var h = computeHours(entry.timeIn, entry.timeOut);
-    var statusPill = statusPillHTML(entry.status);
+    var statusPill = statusPillHTML(entry.status, entry.minutesLate);
     var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
     var todayCls = (d === today) ? ' row-today' : '';
     var hasConcernOpen = myConcerns.some(function(c){ return c.day === d && c.month === monthKey && c.status === 'open'; });
@@ -1601,6 +1619,11 @@ function viewEmployeeDash(emp){
 
   var concernsList = myConcerns.length ? myConcerns.map(concernRowHTML).join('') : '<p class="empty">No concerns filed yet.</p>';
 
+  var myRequests = (STATE.myNotifications || []).filter(function(n){
+    return n.type === 'late' || n.type === 'absence' || n.type === 'sick_leave' || n.type === 'vacation_leave';
+  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  var myRequestsList = myRequests.length ? myRequests.map(myRequestRowHTML).join('') : '<p class="empty">No requests sent yet.</p>';
+
   return '' +
   '<div class="stack" style="gap:24px;">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
@@ -1612,6 +1635,7 @@ function viewEmployeeDash(emp){
       '<div class="row">' +
         '<button class="btn btn-sm" data-action="download-my-timesheet">Download Timesheet</button>' +
         '<button class="btn btn-sm" data-action="download-my-attendance">Download Attendance</button>' +
+        '<button class="btn btn-sm btn-ghost" data-action="notify-admin-open">Notify Admin</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="change-passcode-open">Change Passcode</button>' +
       '</div>' +
     '</div>' +
@@ -1643,11 +1667,18 @@ function viewEmployeeDash(emp){
       '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Flag a day that looks wrong and ' + esc(STATE.primaryAdmin) + ' will review it.</p>' +
       concernsList +
     '</div>' +
+
+    '<div class="card card-pad stack">' +
+      '<h2 style="font-size:18px;">My requests</h2>' +
+      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Late, absence, sick leave and vacation leave requests you\'ve sent to ' + esc(STATE.primaryAdmin) + '. Vacation leave needs Management approval; the rest are just for their records.</p>' +
+      myRequestsList +
+    '</div>' +
   '</div>';
 }
 
-function statusPillHTML(status){
+function statusPillHTML(status, minutesLate){
   if(status === 'P') return '<span class="pill pill-good">Present</span>';
+  if(status === 'L') return '<span class="pill pill-warn">Late' + (minutesLate ? ' · ' + minutesLate + 'm' : '') + '</span>';
   if(status === 'A') return '<span class="pill pill-bad">Absent</span>';
   if(status === 'OFF') return '<span class="pill pill-off">Off</span>';
   return '<span class="pill pill-off">—</span>';
@@ -1669,6 +1700,29 @@ function concernRowHTML(c){
   '</div>';
 }
 
+function myRequestRowHTML(n){
+  var statusPill = n.type === 'vacation_leave'
+    ? (n.status === 'approved' ? '<span class="pill pill-good">Approved</span>'
+      : n.status === 'denied' ? '<span class="pill pill-bad">Denied</span>'
+      : '<span class="pill pill-warn">Awaiting approval</span>')
+    : (n.read ? '<span class="pill pill-good">Seen</span>' : '<span class="pill pill-warn">Sent</span>');
+  var dateRange = (n.startDate || n.endDate)
+    ? '<div class="muted" style="font-size:12px; margin-top:2px;">' + esc(n.startDate || '?') + ' – ' + esc(n.endDate || '?') + '</div>'
+    : '';
+  return '' +
+  '<div class="card-pad" style="border:1px solid var(--line); border-radius:10px; padding:14px 16px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:flex-start;">' +
+      '<div>' +
+        '<div class="row" style="gap:8px; align-items:center;">' + notifTypePillHTML(n.type) + '<span class="muted" style="font-size:11px;">' + esc(fmtNotifWhen(n.createdAt)) + '</span></div>' +
+        '<div style="font-size:13px; margin-top:4px;">' + esc(n.message || '') + '</div>' +
+        dateRange +
+        (n.adminReply ? '<div style="font-size:12.5px; margin-top:8px; padding:8px 10px; background:var(--surface-2); border-radius:7px;"><strong>Reply:</strong> ' + esc(n.adminReply) + '</div>' : '') +
+      '</div>' +
+      statusPill +
+    '</div>' +
+  '</div>';
+}
+
 function statCard(label, value, kind){
   return '<div class="stat"><div class="stat-label">' + esc(label) + '</div><div class="stat-value' + (kind ? ' ' + kind : '') + '">' + esc(value) + '</div></div>';
 }
@@ -1676,12 +1730,17 @@ function statCard(label, value, kind){
 /* ============================================================
    VIEW: ADMIN DASHBOARD
    ============================================================ */
+function unreadNotificationCount(){
+  return (STATE.notifications || []).filter(function(n){ return !n.read; }).length;
+}
 function viewAdminDash(){
   var openCount = allOpenConcerns().length;
+  var unreadCount = unreadNotificationCount();
   var tabs = [
     ['overview','Overview'],
     ['entries','Edit Entries'],
     ['concerns','Concerns', openCount],
+    ['notifications','Notifications', unreadCount],
     ['people','People & Access'],
     ['downloads','Downloads']
   ];
@@ -1694,6 +1753,7 @@ function viewAdminDash(){
   var body = '';
   if(ui.adminTab === 'entries') body = adminEntriesTab();
   else if(ui.adminTab === 'concerns') body = adminConcernsTab();
+  else if(ui.adminTab === 'notifications') body = adminNotificationsTab();
   else if(ui.adminTab === 'people') body = adminPeopleTab();
   else if(ui.adminTab === 'downloads') body = adminDownloadsTab();
   else body = adminOverviewTab();
@@ -1723,15 +1783,16 @@ function adminOverviewTab(){
     var oc = openConcernsFor(emp.id).length;
     return '<tr>' +
       '<td>' + esc(formatName(emp.name)) + '<div class="muted" style="font-size:11.5px;">' + esc(emp.position||'') + '</div></td>' +
-      '<td><span class="badge-shift" title="' + esc(SHIFT_LABELS[emp.shift]||'') + '">' + esc(emp.shift) + '</span></td>' +
+      '<td><span class="badge-shift" title="' + esc(shiftScheduleLabel(emp.shift)) + '">' + esc(shiftName(emp.shift)) + '</span></td>' +
       '<td class="num mono">' + t.daysPresent + '</td>' +
+      '<td class="num mono">' + (t.daysLate > 0 ? '<span class="pill pill-warn">'+t.daysLate+'</span>' : t.daysLate) + '</td>' +
       '<td class="num mono">' + (t.daysAbsent > 0 ? '<span class="pill pill-bad">'+t.daysAbsent+'</span>' : t.daysAbsent) + '</td>' +
       '<td class="num mono">' + fmtHrs(t.regHrs) + '</td>' +
       '<td class="num mono">' + (t.otHrs > 0 ? '<span class="pill pill-warn">'+fmtHrs(t.otHrs)+'</span>' : fmtHrs(t.otHrs)) + '</td>' +
       '<td class="num">' + (oc > 0 ? '<span class="pill pill-bad">'+oc+' open</span>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="admin-goto-entries" data-id="' + esc(emp.id) + '">Edit</button></td>' +
     '</tr>';
-  }).join('') : '<tr><td colspan="8"><p class="empty" style="padding:20px;">No one on this shift yet.</p></td></tr>';
+  }).join('') : '<tr><td colspan="9"><p class="empty" style="padding:20px;">No one on this shift yet.</p></td></tr>';
 
   var totalHrsAll = 0, otAll = 0;
   shownEmps.forEach(function(e){ var t = monthTotals(e.id, monthKey); totalHrsAll += t.totalHrs; otAll += t.otHrs; });
@@ -1746,7 +1807,7 @@ function adminOverviewTab(){
     '<div class="tabs" style="margin-bottom:2px;">' + shiftBtns + '</div>' +
     '<div class="table-wrap">' +
       '<table>' +
-        '<thead><tr><th>Employee</th><th>Shift</th><th class="num">Present</th><th class="num">Absent</th><th class="num">Reg Hrs</th><th class="num">OT Hrs</th><th class="num">Concerns</th><th></th></tr></thead>' +
+        '<thead><tr><th>Employee</th><th>Shift</th><th class="num">Present</th><th class="num">Late</th><th class="num">Absent</th><th class="num">Reg Hrs</th><th class="num">OT Hrs</th><th class="num">Concerns</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
     '</div>' +
@@ -1803,13 +1864,15 @@ function adminEntriesTab(){
       '<td>' + esc(fmtDateShort(monthKey, d)) + '</td>' +
       '<td class="muted">' + esc(weekdayShort(monthKey, d)) + '</td>' +
       '<td><select class="entry-status" style="min-width:90px;">' +
-        ['', 'P','A','OFF'].map(function(s){
+        ['', 'P','L','A','OFF'].map(function(s){
           var sel = (entry.status || '') === s ? ' selected' : '';
-          return '<option value="' + s + '"' + sel + '>' + (s || '—') + '</option>';
+          var opt = s === 'L' ? 'Late' : (s || '—');
+          return '<option value="' + s + '"' + sel + '>' + opt + '</option>';
         }).join('') +
       '</select></td>' +
       '<td>' + timeFieldHTML('entry-timein', entry.timeIn) + '</td>' +
       '<td>' + timeFieldHTML('entry-timeout', entry.timeOut) + '</td>' +
+      '<td><input type="number" min="0" class="entry-minlate" value="' + esc(entry.minutesLate != null ? entry.minutesLate : '') + '" placeholder="—" style="width:64px;" title="Minutes late (only used when Status is Late)"></td>' +
       '<td><input type="text" class="entry-notes" value="' + esc(entry.notes || '') + '" placeholder="—" style="min-width:140px;"></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost" data-action="clear-entry-row" title="Clear status, times and notes for this day">Clear day</button></td>' +
     '</tr>';
@@ -1820,10 +1883,10 @@ function adminEntriesTab(){
       adminEmpSearchHTML(emp) +
       '<button class="btn btn-primary" data-action="save-entries">Save Changes</button>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. An employee\'s own clock-in is marked Late automatically when it\'s past their shift\'s required time in (set in People &amp; Access); set Status to Late here to mark a day late by hand, with how many minutes in the Min Late column. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
     '<div class="table-wrap">' +
       '<table id="entries-editor-table">' +
-        '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Notes</th><th></th></tr></thead>' +
+        '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
     '</div>' +
@@ -1869,6 +1932,103 @@ function adminConcernsTab(){
   '</div>';
 }
 
+/* ============================================================
+   ADMIN: NOTIFICATIONS
+   ------------------------------------------------------------
+   One feed for everything that used to have no single home: system
+   events (a punch, a passcode being set/changed, an auto-detected late
+   arrival) plus employee-submitted requests (late heads-up, absence,
+   sick leave, vacation leave). Vacation leave is the only type with a
+   real approve/deny workflow — Management approval, per Ken's request;
+   everything else just gets read/unread, same as an inbox.
+   ============================================================ */
+var NOTIF_TYPES = {
+  late: { label: 'Late', pill: 'pill-warn' },
+  absence: { label: 'Absence', pill: 'pill-bad' },
+  sick_leave: { label: 'Sick Leave', pill: 'pill-bad' },
+  vacation_leave: { label: 'Vacation Leave', pill: 'pill-accent' },
+  change_password: { label: 'Change Password', pill: 'pill-off' },
+  set_password: { label: 'Set Password', pill: 'pill-off' },
+  time_in: { label: 'Time In', pill: 'pill-good' },
+  time_out: { label: 'Time Out', pill: 'pill-good' }
+};
+function notifTypePillHTML(type){
+  var t = NOTIF_TYPES[type] || { label: type, pill: 'pill-off' };
+  return '<span class="pill ' + t.pill + '">' + esc(t.label) + '</span>';
+}
+function fmtNotifWhen(iso){
+  if(!iso) return '';
+  var d = new Date(iso);
+  if(isNaN(d.getTime())) return '';
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+function adminNotificationsTab(){
+  var filter = ui.notifFilter || 'all';
+  var all = (STATE.notifications || []);
+  var list = filter === 'all' ? all : all.filter(function(n){ return n.type === filter; });
+
+  var filterOptions = '<option value="all">All notifications</option>' +
+    Object.keys(NOTIF_TYPES).map(function(t){
+      var sel = filter === t ? ' selected' : '';
+      return '<option value="' + t + '"' + sel + '>' + esc(NOTIF_TYPES[t].label) + '</option>';
+    }).join('');
+
+  var rows = list.length ? list.map(function(n){
+    var emp = getEmployee(n.empId);
+    var empName = emp ? formatName(emp.name) : 'Unknown';
+    var isVacation = n.type === 'vacation_leave';
+    var isPending = isVacation && n.status === 'pending';
+    var dateRange = (n.startDate || n.endDate)
+      ? '<div class="muted" style="font-size:12px; margin-top:2px;">' + esc(n.startDate || '?') + ' – ' + esc(n.endDate || '?') + '</div>'
+      : '';
+    var vacationStatusPill = isVacation
+      ? (n.status === 'approved' ? '<span class="pill pill-good">Approved</span>'
+        : n.status === 'denied' ? '<span class="pill pill-bad">Denied</span>'
+        : '<span class="pill pill-warn">Awaiting approval</span>')
+      : '';
+    return '<div class="card-pad notif-row" data-id="' + esc(n.id) + '" style="border:1px solid var(--line); border-radius:10px; padding:14px 16px; ' + (n.read ? '' : 'background:var(--bad-soft);') + '">' +
+      '<div class="row" style="justify-content:space-between; align-items:flex-start; gap:10px;">' +
+        '<div style="min-width:0;">' +
+          '<div class="row" style="gap:8px; align-items:center;">' +
+            (n.read ? '' : '<span title="Unread" style="width:8px; height:8px; border-radius:99px; background:var(--bad); flex:none;"></span>') +
+            '<span style="font-weight:600; font-size:13.5px;">' + esc(empName) + '</span>' +
+            notifTypePillHTML(n.type) +
+            vacationStatusPill +
+          '</div>' +
+          '<div class="muted" style="font-size:12.5px; margin-top:4px;">' + esc(n.message || '') + '</div>' +
+          dateRange +
+          '<div class="muted" style="font-size:11px; margin-top:4px;">' + esc(fmtNotifWhen(n.createdAt)) + '</div>' +
+          (n.adminReply ? '<div style="font-size:12.5px; margin-top:8px; padding:8px 10px; background:var(--surface-2); border-radius:7px;"><strong>Reply:</strong> ' + esc(n.adminReply) + '</div>' : '') +
+        '</div>' +
+        '<div class="stack" style="gap:6px; align-items:flex-end; flex:none;">' +
+          '<button class="btn btn-sm btn-ghost" data-action="toggle-notification-read" data-id="' + esc(n.id) + '" data-read="' + (n.read ? '1' : '0') + '">' + (n.read ? 'Mark unread' : 'Mark read') + '</button>' +
+        '</div>' +
+      '</div>' +
+      (isPending ?
+        '<div class="stack" style="margin-top:10px; gap:8px;">' +
+          '<textarea class="notif-reply" placeholder="Reply to ' + esc(empName.split(' ')[0]) + ' (optional)"></textarea>' +
+          '<div class="row" style="justify-content:flex-end; gap:8px;">' +
+            '<button class="btn btn-sm btn-danger" data-action="respond-notification" data-id="' + esc(n.id) + '" data-status="denied">Deny</button>' +
+            '<button class="btn btn-sm btn-primary" data-action="respond-notification" data-id="' + esc(n.id) + '" data-status="approved">Approve</button>' +
+          '</div>' +
+        '</div>'
+        : ''
+      ) +
+    '</div>';
+  }).join('') : '<p class="empty">Nothing here.</p>';
+
+  return '<div class="stack">' +
+    '<div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">' +
+      '<select id="notif-filter-select" style="width:auto; min-width:200px;">' + filterOptions + '</select>' +
+      '<div class="row" style="gap:8px;">' +
+        '<button class="btn btn-sm" data-action="mark-all-notifications" data-read="1">Mark all as read</button>' +
+        '<button class="btn btn-sm btn-ghost" data-action="mark-all-notifications" data-read="0">Mark all as unread</button>' +
+      '</div>' +
+    '</div>' +
+    '<div class="stack" style="gap:10px;">' + rows + '</div>' +
+  '</div>';
+}
+
 /* Sort options for the People & Access employee table (ui.peopleSort).
    Surname sorts by surnameOf() so the two naming styles in this data
    ("Surname, First" and plain "First Surname") land in the same
@@ -1910,7 +2070,7 @@ function adminPeopleTab(){
       '<td class="muted">' + esc(e.email || '—') + '</td>' +
       '<td>' + esc(e.department||'') + '</td>' +
       '<td>' + esc(e.position||'') + '</td>' +
-      '<td><span class="badge-shift">' + esc(e.shift) + '</span></td>' +
+      '<td><span class="badge-shift">' + esc(shiftName(e.shift)) + '</span></td>' +
       '<td>' + passcodeCell + '</td>' +
       '<td>' + (e.passcodeSet ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="edit-employee-open" data-id="' + esc(e.id) + '">Edit</button></td>' +
@@ -1959,6 +2119,22 @@ function adminPeopleTab(){
       '</div>' +
       '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus the shared admin password — email is optional, just for contact purposes. Removing someone here blocks their admin login immediately.</p></div>' +
     '</div>' +
+    '<div class="card">' +
+      '<div class="card-pad" style="padding-bottom:12px;"><h2 style="font-size:17px;">Shift Settings</h2></div>' +
+      '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
+        '<table><thead><tr><th>Shift</th><th>Schedule</th><th>Required Time In</th><th></th></tr></thead><tbody>' +
+        SHIFT_CODES.map(function(code){
+          return '<tr>' +
+            '<td><span class="badge-shift">' + esc(shiftName(code)) + '</span></td>' +
+            '<td class="muted">' + esc(shiftScheduleLabel(code)) + '</td>' +
+            '<td class="mono">' + esc(shiftRequiredTimeIn(code) ? fmtTime12(shiftRequiredTimeIn(code)) : '—') + '</td>' +
+            '<td><button class="btn btn-sm" data-action="edit-shift-open" data-code="' + code + '">Edit</button></td>' +
+          '</tr>';
+        }).join('') +
+        '</tbody></table>' +
+      '</div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Renaming a shift here updates it everywhere it\'s shown; the underlying work-day schedule (which days each shift covers) doesn\'t change.</p></div>' +
+    '</div>' +
   '</div>';
 }
 
@@ -2003,6 +2179,30 @@ function renderModalInto(app){
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="submit-concern">Submit</button>'
     );
+  } else if(ui.modal === 'notifyAdmin'){
+    var reqErr = ui.modalData.reqError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.reqError) + '</p>' : '';
+    html = modalShell('Notify Admin',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">What is this about? <span class="req">*</span>' +
+          '<select id="notify-type">' +
+            '<option value="late">Running Late</option>' +
+            '<option value="absence">Absence</option>' +
+            '<option value="sick_leave">Sick Leave</option>' +
+            '<option value="vacation_leave">Vacation Leave (needs Management approval)</option>' +
+          '</select>' +
+        '</label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Start date <span class="muted" style="font-weight:400;">(vacation leave)</span><input type="date" id="notify-start-date"></label>' +
+          '<label class="field">End date <span class="muted" style="font-weight:400;">(vacation leave)</span><input type="date" id="notify-end-date"></label>' +
+        '</div>' +
+        '<label class="field">Message <span class="req">*</span>' +
+          '<textarea id="notify-message" placeholder="e.g. Running about 15 minutes late this morning — traffic."></textarea>' +
+        '</label>' +
+        reqErr +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="notify-admin-submit">Send</button>'
+    );
   } else if(ui.modal === 'changePasscode'){
     var pcErr = ui.modalData.pcError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.pcError) + '</p>' : '';
     html = modalShell('Change my passcode',
@@ -2043,8 +2243,9 @@ function renderModalInto(app){
       '<button class="btn btn-danger" data-action="confirm-delete-employee-submit">Delete Permanently</button>'
     );
   } else if(ui.modal === 'addEmployee'){
-    var shiftOptions = [['AM','10:00 AM – 5:00 PM | Mon–Sat'],['PM','12:00 PM – 5:00 PM | Mon–Fri'],['EVE','4:00 PM – 8:00 PM | Fridays Only']]
-      .map(function(s){ return '<option value="' + s[0] + '">' + s[0] + ' — ' + s[1] + '</option>'; }).join('');
+    var shiftOptions = SHIFT_CODES.map(function(code){
+      return '<option value="' + code + '">' + esc(shiftName(code)) + ' — ' + esc(shiftScheduleLabel(code)) + '</option>';
+    }).join('');
     html = modalShell('Add employee',
       '<div class="stack" style="gap:12px;">' +
         '<label class="field">Full name <span class="req">*</span><input type="text" id="new-emp-name" placeholder="Last, First"></label>' +
@@ -2060,16 +2261,33 @@ function renderModalInto(app){
     );
   } else if(ui.modal === 'editEmployee'){
     var editEmp = getEmployee(ui.modalData.empId);
+    var editShiftOptions = SHIFT_CODES.map(function(code){
+      var sel = editEmp && editEmp.shift === code ? ' selected' : '';
+      return '<option value="' + code + '"' + sel + '>' + esc(shiftName(code)) + ' — ' + esc(shiftScheduleLabel(code)) + '</option>';
+    }).join('');
     html = modalShell('Edit ' + (editEmp ? formatName(editEmp.name) : 'employee'),
       '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Full name <span class="req">*</span><input type="text" id="edit-emp-name" value="' + esc(editEmp ? editEmp.name : '') + '"></label>' +
         '<label class="field">Email<input type="email" id="edit-emp-email" placeholder="name@example.com" value="' + esc(editEmp ? (editEmp.email||'') : '') + '"></label>' +
         '<div class="grid grid-2">' +
           '<label class="field">Department<input type="text" id="edit-emp-dept" value="' + esc(editEmp ? (editEmp.department||'') : '') + '"></label>' +
           '<label class="field">Position<input type="text" id="edit-emp-position" value="' + esc(editEmp ? (editEmp.position||'') : '') + '"></label>' +
         '</div>' +
+        '<label class="field">Shift<select id="edit-emp-shift">' + editShiftOptions + '</select></label>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-employee-submit">Save</button>'
+    );
+  } else if(ui.modal === 'editShift'){
+    var shiftCode = ui.modalData.code;
+    html = modalShell('Edit ' + esc(shiftName(shiftCode)) + ' shift',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Shift name <span class="req">*</span><input type="text" id="edit-shift-name" value="' + esc(shiftName(shiftCode)) + '"></label>' +
+        '<label class="field">Required time in<input type="time" id="edit-shift-required" value="' + esc(shiftRequiredTimeIn(shiftCode) || '') + '"></label>' +
+        '<p class="muted" style="margin:0; font-size:12px;">Schedule: ' + esc(shiftScheduleLabel(shiftCode)) + ' (which days this shift covers isn\'t editable here).</p>' +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="edit-shift-submit">Save</button>'
     );
   } else if(ui.modal === 'confirmRemoveAdmin'){
     html = modalShell('Remove admin',
@@ -2121,6 +2339,13 @@ function wireInputsAfterRender(){
   if(peopleSortSelect){
     peopleSortSelect.addEventListener('change', function(){
       ui.peopleSort = peopleSortSelect.value;
+      render();
+    });
+  }
+  var notifFilterSelect = $('notif-filter-select');
+  if(notifFilterSelect){
+    notifFilterSelect.addEventListener('change', function(){
+      ui.notifFilter = notifFilterSelect.value;
       render();
     });
   }
@@ -2409,7 +2634,19 @@ var handlers = {
     var stamp = nowTimeHHMM();
     apiPersist('punch', { token: session.token, field: 'timeIn', monthKey: monthKey, day: day, stamp: stamp },
       function(s){ setEntry(emp.id, monthKey, day, { timeIn: stamp, status: (existing && existing.status) === 'A' ? 'A' : 'P' }); },
-      { successMsg: 'Clocked in at ' + fmtTime12(stamp) });
+      {
+        successMsg: 'Clocked in at ' + fmtTime12(stamp),
+        // The server is the source of truth for lateness (it compares
+        // against the shift's required time-in) — patch the real result
+        // in immediately rather than waiting up to 7s for the next poll.
+        onSuccess: function(data){
+          if(data && data.minutesLate){
+            setEntry(emp.id, monthKey, day, { status: 'L', minutesLate: data.minutesLate });
+            render();
+            toast('Marked Late — ' + data.minutesLate + ' minute' + (data.minutesLate === 1 ? '' : 's') + ' past shift start.', 'error');
+          }
+        }
+      });
   },
   'punch-time-out': function(){
     var emp = getEmployee(session.employeeId);
@@ -2444,6 +2681,32 @@ var handlers = {
         });
       },
       { successMsg: 'Concern submitted' });
+  },
+  'notify-admin-open': function(){ ui.modal = 'notifyAdmin'; ui.modalData = {}; render(); },
+  'notify-admin-submit': function(){
+    var type = ($('notify-type') || {}).value || 'late';
+    var message = (($('notify-message')||{}).value || '').trim();
+    var startDate = ($('notify-start-date')||{}).value || null;
+    var endDate = ($('notify-end-date')||{}).value || null;
+    if(!message){
+      ui.modalData.reqError = 'Please describe the request first.';
+      render();
+      return;
+    }
+    ui.modal = null;
+    apiPersist('submit-request', {
+        token: session.token, type: type, message: message,
+        month: currentMonthKey(), startDate: startDate, endDate: endDate
+      },
+      function(s){
+        if(!s.myNotifications) s.myNotifications = [];
+        s.myNotifications.unshift({
+          id: uid('notif'), empId: session.employeeId, type: type, message: message,
+          startDate: startDate, endDate: endDate, status: type === 'vacation_leave' ? 'pending' : 'open',
+          read: false, createdAt: new Date().toISOString(), resolvedAt: null, adminReply: null
+        });
+      },
+      { successMsg: 'Sent to ' + (STATE.primaryAdmin || 'admin') });
   },
   'download-my-timesheet': function(){
     var emp = getEmployee(session.employeeId); if(!emp) return;
@@ -2510,10 +2773,12 @@ var handlers = {
     var status = tr.querySelector('.entry-status');
     var timeIn = tr.querySelector('.entry-timein');
     var timeOut = tr.querySelector('.entry-timeout');
+    var minLate = tr.querySelector('.entry-minlate');
     var notes = tr.querySelector('.entry-notes');
     if(status) status.value = '';
     if(timeIn) timeIn.value = '';
     if(timeOut) timeOut.value = '';
+    if(minLate) minLate.value = '';
     if(notes) notes.value = '';
   },
   'admin-goto-entries': function(el){ ui.adminEmpId = el.dataset.id; ui.adminTab = 'entries'; render(); },
@@ -2529,8 +2794,10 @@ var handlers = {
       var status = tr.querySelector('.entry-status').value || null;
       var timeIn = tr.querySelector('.entry-timein').value || null;
       var timeOut = tr.querySelector('.entry-timeout').value || null;
+      var minLateVal = tr.querySelector('.entry-minlate').value;
+      var minutesLate = (status === 'L' && minLateVal !== '') ? parseInt(minLateVal, 10) : null;
       var notes = tr.querySelector('.entry-notes').value || null;
-      patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, notes: notes };
+      patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, minutesLate: minutesLate, notes: notes };
     });
     apiPersist('save-entries', { token: session.token, employeeId: empId, monthKey: monthKey, patches: patches },
       function(s){ Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); }); },
@@ -2548,6 +2815,34 @@ var handlers = {
       },
       { successMsg: 'Concern resolved' });
   },
+  'toggle-notification-read': function(el){
+    var id = el.dataset.id;
+    var wasRead = el.dataset.read === '1';
+    apiPersist('mark-notifications-read', { token: session.token, ids: [id], read: !wasRead },
+      function(s){
+        var n = (s.notifications || []).filter(function(x){ return x.id === id; })[0];
+        if(n) n.read = !wasRead;
+      },
+      { successMsg: wasRead ? 'Marked unread' : 'Marked read' });
+  },
+  'mark-all-notifications': function(el){
+    var read = el.dataset.read === '1';
+    apiPersist('mark-notifications-read', { token: session.token, read: read },
+      function(s){ (s.notifications || []).forEach(function(n){ n.read = read; }); },
+      { successMsg: read ? 'All marked read' : 'All marked unread' });
+  },
+  'respond-notification': function(el){
+    var id = el.dataset.id;
+    var status = el.dataset.status;
+    var card = el.closest('.notif-row');
+    var reply = card ? (card.querySelector('.notif-reply') || {}).value : '';
+    apiPersist('respond-notification', { token: session.token, notificationId: id, status: status, reply: reply },
+      function(s){
+        var n = (s.notifications || []).filter(function(x){ return x.id === id; })[0];
+        if(n){ n.status = status; n.read = true; n.adminReply = (reply || '').trim() || null; }
+      },
+      { successMsg: status === 'approved' ? 'Vacation leave approved' : 'Vacation leave denied' });
+  },
   'add-employee-open': function(){ ui.modal = 'addEmployee'; render(); },
   'add-employee-submit': function(){
     var name = ($('new-emp-name') || {}).value || '';
@@ -2557,14 +2852,13 @@ var handlers = {
     var dept = (($('new-emp-dept')||{}).value || '').trim() || null;
     var position = (($('new-emp-position')||{}).value || '').trim() || null;
     var shift = ($('new-emp-shift')||{}).value || 'AM';
-    var shiftLabels = { AM: '10:00 AM – 5:00 PM | Mon–Sat', PM: '12:00 PM – 5:00 PM | Mon–Fri', EVE: '4:00 PM – 8:00 PM | Fridays Only' };
     var baseId = slugify(name) || uid('emp');
     var id = baseId, n = 1;
     while(getEmployee(id)){ id = baseId + '-' + (++n); }
     ui.modal = null;
     apiPersist('add-employee', { token: session.token, name: name, email: email, department: dept, position: position, shift: shift },
       function(s){
-        s.employees.push({ id: id, name: name, email: email, department: dept, position: position, manager: s.primaryAdmin, shift: shift, shiftLabel: shiftLabels[shift], active: true, passcodeSet: false });
+        s.employees.push({ id: id, name: name, email: email, department: dept, position: position, manager: s.primaryAdmin, shift: shift, shiftLabel: shiftScheduleLabel(shift), active: true, passcodeSet: false });
         s.entries[id] = {};
       },
       {
@@ -2588,16 +2882,47 @@ var handlers = {
   },
   'edit-employee-submit': function(){
     var id = ui.modalData.empId;
+    var name = (($('edit-emp-name')||{}).value || '').trim();
+    if(!name){ toast('Please enter a name.', 'error'); return; }
     var email = (($('edit-emp-email')||{}).value || '').trim() || null;
     var dept = (($('edit-emp-dept')||{}).value || '').trim() || null;
     var position = (($('edit-emp-position')||{}).value || '').trim() || null;
+    var shift = ($('edit-emp-shift')||{}).value || null;
     ui.modal = null;
-    apiPersist('edit-employee', { token: session.token, employeeId: id, email: email, department: dept, position: position },
+    apiPersist('edit-employee', { token: session.token, employeeId: id, name: name, email: email, department: dept, position: position, shift: shift },
       function(s){
         var e = s.employees.filter(function(x){ return x.id === id; })[0];
-        if(e){ e.email = email; e.department = dept; e.position = position; }
+        if(e){
+          e.name = name; e.email = email; e.department = dept; e.position = position;
+          if(shift){ e.shift = shift; e.shiftLabel = shiftScheduleLabel(shift); }
+        }
       },
       { successMsg: 'Employee updated' });
+  },
+  'edit-shift-open': function(el){
+    ui.modal = 'editShift'; ui.modalData = { code: el.dataset.code }; render();
+  },
+  'edit-shift-submit': function(){
+    var code = ui.modalData.code;
+    var name = (($('edit-shift-name')||{}).value || '').trim();
+    if(!name){ toast('Please enter a shift name.', 'error'); return; }
+    var requiredTimeIn = ($('edit-shift-required')||{}).value || '';
+    ui.modal = null;
+    apiPersist('update-shift-settings', { token: session.token, code: code, name: name, requiredTimeIn: requiredTimeIn },
+      function(s){
+        if(!s.shifts) s.shifts = {};
+        if(!s.shifts[code]) s.shifts[code] = { code: code };
+        s.shifts[code].name = name;
+        s.shifts[code].requiredTimeIn = requiredTimeIn || null;
+      },
+      {
+        successMsg: 'Shift updated',
+        // The server response includes the full admin state (employees'
+        // shift_label gets cascaded there too) — merge it in so every
+        // employee on this shift shows the refreshed schedule text right
+        // away instead of waiting for the next poll.
+        onSuccess: function(data){ if(data && data.role === 'admin'){ applyServerState(data); render(); } }
+      });
   },
   'toggle-employee-active': function(el){
     var id = el.dataset.id;
