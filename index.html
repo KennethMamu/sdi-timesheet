@@ -614,10 +614,7 @@ function isWeekend(monthStr, day){ var d = dateForDay(monthStr, day).getDay(); r
    the same way the template does, instead of just leaving it blank. */
 function isShiftWorkDay(shift, monthStr, day){
   var dow = dateForDay(monthStr, day).getDay(); // 0=Sun..6=Sat
-  if(shift === 'AM') return dow !== 0;
-  if(shift === 'PM') return dow >= 1 && dow <= 5;
-  if(shift === 'EVE') return dow === 5;
-  return true;
+  return shiftWorkDays(shift).indexOf(dow) !== -1;
 }
 function fmtDateShort(monthStr, day){
   var mi = monthInfo(monthStr);
@@ -897,12 +894,25 @@ function xlTd(content, style, colspan){
 /* Matches the attendance-schedule template's own section order and banner
    wording exactly (PM, then AM, then Evening) rather than alphabetizing
    the shift codes. */
-var ATTENDANCE_GROUP_ORDER = ['PM','AM','EVE'];
 var ATTENDANCE_GROUP_BANNER = {
   PM:  '12:00 PM – 5:00 PM   |   Monday to Friday',
   AM:  '10:00 AM – 5:00 PM   |   Monday to Saturday',
   EVE: '4:00 PM – 8:00 PM   |   Fridays Only'
 };
+/* PM, then AM, then Evening — matches the paper template's wording
+   exactly rather than alphabetizing. Any shift an admin adds beyond
+   these three original ones is appended after, in whatever order it
+   loads, with a banner generated from its own schedule label so new
+   shifts still show up in this export instead of silently vanishing. */
+function attendanceGroupOrder(){
+  var codes = shiftCodes();
+  var base = ['PM','AM','EVE'].filter(function(c){ return codes.indexOf(c) !== -1; });
+  var extra = codes.filter(function(c){ return base.indexOf(c) === -1; });
+  return base.concat(extra);
+}
+function attendanceGroupBanner(code){
+  return ATTENDANCE_GROUP_BANNER[code] || (shiftScheduleLabel(code) || shiftName(code));
+}
 
 /* ============================================================
    EXCEL-STYLE EXPORTS (HTML table, saved with a .html extension)
@@ -1051,9 +1061,10 @@ function attendanceGridExcelHTML(monthKey){
   html += '<tr>' + xlTd('Employee Attendance Schedule', 'font-weight:700;font-size:18px;text-align:center;padding:10px;border:none;', totalCols) + '</tr>';
   html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
 
-  ATTENDANCE_GROUP_ORDER.forEach(function(shift, gi){
+  var groupOrder = attendanceGroupOrder();
+  groupOrder.forEach(function(shift, gi){
     var emps = byShift[shift] || [];
-    html += '<tr>' + xlTd(esc(ATTENDANCE_GROUP_BANNER[shift]), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
+    html += '<tr>' + xlTd(esc(attendanceGroupBanner(shift)), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
     html += attendanceDayHeaderRowHTML(monthKey);
 
     if(!emps.length){
@@ -1063,7 +1074,7 @@ function attendanceGridExcelHTML(monthKey){
         html += attendanceEmployeeRowHTML(emp, shift, monthKey);
       });
     }
-    if(gi < ATTENDANCE_GROUP_ORDER.length - 1){
+    if(gi < groupOrder.length - 1){
       html += '<tr>' + xlTd('', 'border:none;padding:6px;', totalCols) + '</tr>';
     }
   });
@@ -1176,17 +1187,68 @@ function monthNavHTML(dataScope, monthKey){
 }
 
 var SHIFT_LABELS = { AM: '10:00 AM – 5:00 PM (Mon–Sat)', PM: '12:00 PM – 5:00 PM (Mon–Fri)', EVE: '4:00 PM – 8:00 PM (Fridays)' };
-/* Shift codes (AM/PM/EVE) stay fixed — they drive the Mon-Sat/Mon-Fri/
-   Fridays-only work-day logic in isShiftWorkDay(). What admins CAN rename
-   (per Ken's request) is the shift's display name and its required
-   clock-in time, both editable from People & Access and stored server-side
-   in STATE.shifts (keyed by code). These helpers fall back to the code
-   itself / the constant above whenever that data hasn't loaded yet. */
-var SHIFT_CODES = ['AM', 'PM', 'EVE'];
+var LEGACY_WORK_DAYS = { AM: [1,2,3,4,5,6], PM: [1,2,3,4,5], EVE: [5] };
+var DOW_SHORT = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+/* Shifts are admin-defined and live server-side in STATE.shifts (keyed by
+   code): name, schedule label, required clock-in time, and which days of
+   the week the shift runs (workDays, 0=Sun..6=Sat). Admins can rename any
+   shift, edit its schedule/required time, and add brand-new shifts from
+   People & Access -> Shift Settings — nothing about AM/PM/EVE is special
+   at the code level any more. shiftCodes() reflects whatever's currently
+   loaded (ordered by the server's sortOrder), falling back to the
+   original AM/PM/EVE trio before the first server response arrives so
+   the UI has something to render immediately; isShiftWorkDay() falls
+   back to the original hardcoded Mon-Sat/Mon-Fri/Fridays-only pattern
+   for those three specific codes if workDays hasn't loaded yet either. */
+function shiftCodes(){
+  if(STATE.shifts && Object.keys(STATE.shifts).length){
+    return Object.keys(STATE.shifts).sort(function(a,b){
+      var oa = shiftInfo(a).sortOrder, ob = shiftInfo(b).sortOrder;
+      if(oa != null && ob != null && oa !== ob) return oa - ob;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+  }
+  return ['AM', 'PM', 'EVE'];
+}
 function shiftInfo(code){ return (STATE.shifts && STATE.shifts[code]) || {}; }
 function shiftName(code){ return shiftInfo(code).name || code; }
 function shiftScheduleLabel(code){ return shiftInfo(code).scheduleLabel || SHIFT_LABELS[code] || ''; }
 function shiftRequiredTimeIn(code){ return shiftInfo(code).requiredTimeIn || null; }
+function shiftWorkDays(code){
+  var wd = shiftInfo(code).workDays;
+  if(Array.isArray(wd) && wd.length) return wd.slice();
+  return (LEGACY_WORK_DAYS[code] || [1,2,3,4,5,6]).slice();
+}
+function shiftWorkDaysLabel(code){
+  var days = shiftWorkDays(code).slice().sort(function(a,b){ return a-b; });
+  if(!days.length) return '—';
+  if(days.length === 7) return 'Every day';
+  // Compress consecutive runs (e.g. 1,2,3,4,5,6 -> "Mon–Sat") for
+  // readability; non-consecutive selections just get comma-joined.
+  var runs = [], start = days[0], prev = days[0];
+  for(var i=1; i<=days.length; i++){
+    var d = days[i];
+    if(d === prev + 1){ prev = d; continue; }
+    runs.push(start === prev ? DOW_SHORT[start] : DOW_SHORT[start] + '–' + DOW_SHORT[prev]);
+    start = prev = d;
+  }
+  return runs.join(', ');
+}
+function dayCheckboxesHTML(prefix, selectedDays){
+  return '<div class="row" style="flex-wrap:wrap; gap:12px;">' +
+    DOW_SHORT.map(function(label, i){
+      var checked = selectedDays.indexOf(i) !== -1 ? ' checked' : '';
+      return '<label style="display:flex; align-items:center; gap:5px; font-size:12.5px; font-weight:400;">' +
+        '<input type="checkbox" class="' + prefix + '-day" value="' + i + '"' + checked + '>' + label +
+      '</label>';
+    }).join('') +
+  '</div>';
+}
+function readCheckedDays(prefix){
+  var out = [];
+  document.querySelectorAll('.' + prefix + '-day:checked').forEach(function(el){ out.push(Number(el.value)); });
+  return out;
+}
 /* Search-bar/autocomplete field for picking an employee on the Admin ->
    Edit Entries tab — same interaction pattern as the landing page's
    employee search, but selection is immediate (no "Continue" step) since
@@ -1773,7 +1835,10 @@ function adminOverviewTab(){
   var shiftFilter = ui.overviewShift || 'all';
   var shownEmps = sortedActiveEmployees().filter(function(e){ return shiftFilter === 'all' || e.shift === shiftFilter; });
 
-  var shiftBtns = [['all','All Shifts'],['AM','AM Shift'],['PM','PM Shift'],['EVE','Evening Shift']].map(function(s){
+  // Built from live shift data (not a hardcoded AM/PM/EVE list) so a
+  // renamed or newly-added shift shows up here with the right label
+  // automatically, instead of needing its own code change.
+  var shiftBtns = [['all','All Shifts']].concat(shiftCodes().map(function(c){ return [c, shiftName(c) + ' Shift']; })).map(function(s){
     var active = shiftFilter === s[0] ? ' active' : '';
     return '<button class="tab' + active + '" data-action="overview-shift-filter" data-shift="' + s[0] + '">' + s[1] + '</button>';
   }).join('');
@@ -2120,20 +2185,24 @@ function adminPeopleTab(){
       '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus the shared admin password — email is optional, just for contact purposes. Removing someone here blocks their admin login immediately.</p></div>' +
     '</div>' +
     '<div class="card">' +
-      '<div class="card-pad" style="padding-bottom:12px;"><h2 style="font-size:17px;">Shift Settings</h2></div>' +
+      '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
+        '<h2 style="font-size:17px;">Shift Settings</h2>' +
+        '<button class="btn btn-sm btn-primary" data-action="add-shift-open">+ Add Shift</button>' +
+      '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table><thead><tr><th>Shift</th><th>Schedule</th><th>Required Time In</th><th></th></tr></thead><tbody>' +
-        SHIFT_CODES.map(function(code){
+        '<table><thead><tr><th>Shift</th><th>Schedule</th><th>Work Days</th><th>Required Time In</th><th></th></tr></thead><tbody>' +
+        shiftCodes().map(function(code){
           return '<tr>' +
             '<td><span class="badge-shift">' + esc(shiftName(code)) + '</span></td>' +
             '<td class="muted">' + esc(shiftScheduleLabel(code)) + '</td>' +
+            '<td class="muted">' + esc(shiftWorkDaysLabel(code)) + '</td>' +
             '<td class="mono">' + esc(shiftRequiredTimeIn(code) ? fmtTime12(shiftRequiredTimeIn(code)) : '—') + '</td>' +
             '<td><button class="btn btn-sm" data-action="edit-shift-open" data-code="' + code + '">Edit</button></td>' +
           '</tr>';
         }).join('') +
         '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Renaming a shift here updates it everywhere it\'s shown; the underlying work-day schedule (which days each shift covers) doesn\'t change.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Edit a shift to rename it, change its schedule, or change which days it runs — updates everywhere it\'s shown. Add Shift creates a brand-new shift employees can be assigned to.</p></div>' +
     '</div>' +
   '</div>';
 }
@@ -2243,7 +2312,7 @@ function renderModalInto(app){
       '<button class="btn btn-danger" data-action="confirm-delete-employee-submit">Delete Permanently</button>'
     );
   } else if(ui.modal === 'addEmployee'){
-    var shiftOptions = SHIFT_CODES.map(function(code){
+    var shiftOptions = shiftCodes().map(function(code){
       return '<option value="' + code + '">' + esc(shiftName(code)) + ' — ' + esc(shiftScheduleLabel(code)) + '</option>';
     }).join('');
     html = modalShell('Add employee',
@@ -2261,7 +2330,7 @@ function renderModalInto(app){
     );
   } else if(ui.modal === 'editEmployee'){
     var editEmp = getEmployee(ui.modalData.empId);
-    var editShiftOptions = SHIFT_CODES.map(function(code){
+    var editShiftOptions = shiftCodes().map(function(code){
       var sel = editEmp && editEmp.shift === code ? ' selected' : '';
       return '<option value="' + code + '"' + sel + '>' + esc(shiftName(code)) + ' — ' + esc(shiftScheduleLabel(code)) + '</option>';
     }).join('');
@@ -2283,11 +2352,25 @@ function renderModalInto(app){
     html = modalShell('Edit ' + esc(shiftName(shiftCode)) + ' shift',
       '<div class="stack" style="gap:12px;">' +
         '<label class="field">Shift name <span class="req">*</span><input type="text" id="edit-shift-name" value="' + esc(shiftName(shiftCode)) + '"></label>' +
+        '<label class="field">Schedule label<input type="text" id="edit-shift-schedule" placeholder="e.g. 10:00 AM – 5:00 PM" value="' + esc(shiftScheduleLabel(shiftCode)) + '"></label>' +
         '<label class="field">Required time in<input type="time" id="edit-shift-required" value="' + esc(shiftRequiredTimeIn(shiftCode) || '') + '"></label>' +
-        '<p class="muted" style="margin:0; font-size:12px;">Schedule: ' + esc(shiftScheduleLabel(shiftCode)) + ' (which days this shift covers isn\'t editable here).</p>' +
+        '<label class="field">Work days' + dayCheckboxesHTML('edit-shift', shiftWorkDays(shiftCode)) + '</label>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-shift-submit">Save</button>'
+    );
+  } else if(ui.modal === 'addShift'){
+    html = modalShell('Add shift',
+      '<div class="stack" style="gap:12px;">' +
+        '<label class="field">Shift code <span class="req">*</span><input type="text" id="new-shift-code" placeholder="e.g. NIGHT" maxlength="8" style="text-transform:uppercase;"></label>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Short, no spaces — used internally to identify this shift. Can\'t be changed later.</p>' +
+        '<label class="field">Shift name <span class="req">*</span><input type="text" id="new-shift-name" placeholder="e.g. Night Shift"></label>' +
+        '<label class="field">Schedule label<input type="text" id="new-shift-schedule" placeholder="e.g. 8:00 PM – 12:00 AM"></label>' +
+        '<label class="field">Required time in<input type="time" id="new-shift-required"></label>' +
+        '<label class="field">Work days <span class="req">*</span>' + dayCheckboxesHTML('new-shift', []) + '</label>' +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="add-shift-submit">Add Shift</button>'
     );
   } else if(ui.modal === 'confirmRemoveAdmin'){
     html = modalShell('Remove admin',
@@ -2906,14 +2989,19 @@ var handlers = {
     var code = ui.modalData.code;
     var name = (($('edit-shift-name')||{}).value || '').trim();
     if(!name){ toast('Please enter a shift name.', 'error'); return; }
+    var scheduleLabel = (($('edit-shift-schedule')||{}).value || '').trim();
     var requiredTimeIn = ($('edit-shift-required')||{}).value || '';
+    var workDays = readCheckedDays('edit-shift');
+    if(!workDays.length){ toast('Pick at least one work day.', 'error'); return; }
     ui.modal = null;
-    apiPersist('update-shift-settings', { token: session.token, code: code, name: name, requiredTimeIn: requiredTimeIn },
+    apiPersist('update-shift-settings', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, workDays: workDays },
       function(s){
         if(!s.shifts) s.shifts = {};
         if(!s.shifts[code]) s.shifts[code] = { code: code };
         s.shifts[code].name = name;
+        s.shifts[code].scheduleLabel = scheduleLabel || null;
         s.shifts[code].requiredTimeIn = requiredTimeIn || null;
+        s.shifts[code].workDays = workDays;
       },
       {
         successMsg: 'Shift updated',
@@ -2921,6 +3009,30 @@ var handlers = {
         // shift_label gets cascaded there too) — merge it in so every
         // employee on this shift shows the refreshed schedule text right
         // away instead of waiting for the next poll.
+        onSuccess: function(data){ if(data && data.role === 'admin'){ applyServerState(data); render(); } }
+      });
+  },
+  'add-shift-open': function(){
+    ui.modal = 'addShift'; ui.modalData = {}; render();
+  },
+  'add-shift-submit': function(){
+    var code = (($('new-shift-code')||{}).value || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if(!code || code.length < 2){ toast('Please enter a shift code (2+ letters/numbers).', 'error'); return; }
+    if(STATE.shifts && STATE.shifts[code]){ toast('That shift code is already in use.', 'error'); return; }
+    var name = (($('new-shift-name')||{}).value || '').trim();
+    if(!name){ toast('Please enter a shift name.', 'error'); return; }
+    var scheduleLabel = (($('new-shift-schedule')||{}).value || '').trim();
+    var requiredTimeIn = ($('new-shift-required')||{}).value || '';
+    var workDays = readCheckedDays('new-shift');
+    if(!workDays.length){ toast('Pick at least one work day.', 'error'); return; }
+    ui.modal = null;
+    apiPersist('add-shift', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, workDays: workDays },
+      function(s){
+        if(!s.shifts) s.shifts = {};
+        s.shifts[code] = { code: code, name: name, scheduleLabel: scheduleLabel || null, requiredTimeIn: requiredTimeIn || null, workDays: workDays };
+      },
+      {
+        successMsg: 'Shift added',
         onSuccess: function(data){ if(data && data.role === 'admin'){ applyServerState(data); render(); } }
       });
   },
