@@ -1786,7 +1786,12 @@ function viewAdminLogin(){
         '<p class="muted" style="margin:0; font-size:13px;">Only people on the admin list can edit entries, resolve concerns, and manage staff.</p>' +
       '</div>' +
       '<label class="field">Admin name' +
-        '<select id="admin-login-name">' + options + '</select>' +
+        // autocomplete="off" specifically to opt this <select> out of
+        // Chrome's "restore form values on reload" behavior — without it,
+        // reloading this page re-applies whatever name was selected the
+        // *last* time this tab loaded it, silently undoing the placeholder
+        // this view just rendered and defeating the whole point of the fix.
+        '<select id="admin-login-name" autocomplete="off">' + options + '</select>' +
       '</label>' +
       '<label class="field">Password' +
         pwToggleField('admin-login-pass', 'current-password', '••••••') +
@@ -2755,7 +2760,7 @@ function renderModalInto(app){
         '<div class="stack" style="gap:12px;">' +
           '<p class="muted" style="margin:0; font-size:12.5px;">This only works for the primary admin — everyone else should ask ' + esc(STATE.primaryAdmin || 'the primary admin') + ' to reset their passcode from People &amp; Access. We’ll email a one-time code to ' + esc(PRIMARY_RECOVERY_EMAIL) + '.</p>' +
           '<label class="field">Admin name' +
-            '<select id="admin-fr-name">' +
+            '<select id="admin-fr-name" autocomplete="off">' +
               '<option value="" disabled' + (ui.modalData.name ? '' : ' selected') + '>Select your name…</option>' +
               (STATE.admins || []).map(function(a){ var sel = a === ui.modalData.name ? ' selected' : ''; return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>'; }).join('') +
             '</select>' +
@@ -2802,6 +2807,23 @@ function modalShell(title, body, foot){
 }
 
 function wireInputsAfterRender(){
+  // Belt-and-suspenders against Chrome's "restore form values on reload":
+  // on a plain page reload (not just our own render()), Chrome can
+  // re-apply whatever a <select> was last set to in that tab, silently
+  // overriding the blank placeholder this view just rendered — the
+  // autocomplete="off" on these two <select>s (see viewAdminLogin /
+  // adminForgotPasscode) is the primary fix, but some Chrome versions
+  // still restore selects marked autocomplete="off" a tick after paint.
+  // Force it back to blank right after paint, and again next frame, so a
+  // late restore never wins. Only when we haven't ourselves recorded a
+  // real attempted name (ui.modalData.lastTriedName) — a failed-login
+  // retry still needs its own picked name to stay selected.
+  ['admin-login-name', 'admin-fr-name'].forEach(function(id){
+    var sel = $(id);
+    if(!sel || ui.modalData.lastTriedName || ui.modalData.name) return;
+    sel.value = '';
+    requestAnimationFrame(function(){ if($(id)) $(id).value = ''; });
+  });
   // Deliberately not a data-action button: the generic modal Enter-submit
   // (wireModalEnterSubmit below) treats the first non-close data-action
   // element in the modal as "the" primary action, and this link sits in
