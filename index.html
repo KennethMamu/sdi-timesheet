@@ -428,6 +428,9 @@ function applyBootstrapState(data){
   STATE.primaryAdmin = data.primaryAdmin;
   STATE.admins = data.admins || [];
   STATE.adminEmails = {};
+  STATE.adminPhotos = {};
+  STATE.adminPasscodeSet = {};
+  STATE.adminBroadcastAccess = {};
   STATE.employees = data.employees || [];
   STATE.entries = {};
   STATE.concerns = [];
@@ -442,6 +445,9 @@ function applyServerState(data){
   if(data.role === 'admin'){
     STATE.admins = data.admins || [];
     STATE.adminEmails = data.adminEmails || {};
+    STATE.adminPhotos = data.adminPhotos || {};
+    STATE.adminPasscodeSet = data.adminPasscodeSet || {};
+    STATE.adminBroadcastAccess = data.adminBroadcastAccess || {};
     STATE.employees = data.employees || [];
     STATE.entries = data.entries || {};
     STATE.concerns = data.concerns || [];
@@ -758,6 +764,10 @@ var API_ERROR_MESSAGES = {
   invalid_login: 'That didn’t match our records.',
   already_admin: 'That person is already an admin.',
   cannot_remove_primary: 'The primary admin can’t be removed.',
+  no_active_employees: 'There’s no one active to notify right now.',
+  invalid_photo: 'That doesn’t look like a valid image.',
+  photo_too_large: 'That image is too large — try a smaller photo.',
+  empty_message: 'Write a message first.',
 };
 function apiErrorMessage(err){
   var code = err && err.code;
@@ -839,6 +849,59 @@ function downloadViaBlob(baseName, content, ext){
   }
 }
 
+/* ============================================================
+   PROFILE PHOTOS
+   ------------------------------------------------------------
+   Stored as a data: URL directly on the employee/admin row — same trick
+   this file already uses for its own embedded logo — rather than a
+   separate storage bucket, since these are small avatar-sized images and
+   this standalone build has no other file storage set up. Every upload
+   is downscaled and re-encoded client-side before it ever reaches the
+   server, both to keep the row small and so a giant phone photo doesn't
+   need to round-trip at full size first.
+   ============================================================ */
+var PHOTO_MAX_DIM = 240; // px, longest side after resize
+var PHOTO_MAX_DATA_URL_LEN = 350000; // server's cap is 400000 — leaves headroom
+function resizeImageFile(file, callback){
+  if(!file){ callback(null, null); return; }
+  if(!/^image\//.test(file.type)){ callback(null, 'Please choose an image file.'); return; }
+  var reader = new FileReader();
+  reader.onload = function(){
+    var img = new Image();
+    img.onload = function(){
+      var w = img.width, h = img.height;
+      if(!w || !h){ callback(null, 'Couldn’t read that image.'); return; }
+      var scale = Math.min(1, PHOTO_MAX_DIM / Math.max(w, h));
+      var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = cw; canvas.height = ch;
+      var ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, cw, ch);
+      var dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+      if(dataUrl.length > PHOTO_MAX_DATA_URL_LEN) dataUrl = canvas.toDataURL('image/jpeg', 0.6);
+      if(dataUrl.length > PHOTO_MAX_DATA_URL_LEN){ callback(null, 'That image is too large — try a smaller photo.'); return; }
+      callback(dataUrl, null);
+    };
+    img.onerror = function(){ callback(null, 'Couldn’t read that image.'); };
+    img.src = reader.result;
+  };
+  reader.onerror = function(){ callback(null, 'Couldn’t read that file.'); };
+  reader.readAsDataURL(file);
+}
+/* A round photo where one's set, otherwise a plain initials circle —
+   used for employees and admins alike, wherever a name is shown with
+   room for a face next to it. */
+function avatarHTML(photoDataUrl, name, size){
+  size = size || 40;
+  var common = 'width:' + size + 'px; height:' + size + 'px; border-radius:50%; flex:none;';
+  if(photoDataUrl){
+    return '<img src="' + esc(photoDataUrl) + '" alt="" style="' + common + ' object-fit:cover; border:1px solid var(--line);">';
+  }
+  var initials = String(name || '?').trim().split(/\s+/).map(function(w){ return w.charAt(0); }).filter(Boolean).slice(0,2).join('').toUpperCase() || '?';
+  var fontSize = Math.max(11, Math.round(size * 0.4));
+  return '<div style="' + common + ' background:var(--accent-soft); color:var(--accent); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:' + fontSize + 'px;">' + esc(initials) + '</div>';
+}
+
 function offerDownload(baseName, content, ext){
   ext = ext || 'csv';
   if(!downloadsCap){
@@ -873,9 +936,17 @@ function offerDownload(baseName, content, ext){
    Open and render the colors/borders/merges correctly — this is a common,
    well-supported way to ship an "Excel-style" export without a server. */
 function excelHTMLDoc(title, tableHTML){
+  // Every export gets the company logo up top — shared here so all four
+  // export types (Timesheet, Attendance, Attendance Grid, Summary) pick
+  // it up automatically instead of needing the same block copy-pasted
+  // into each one. Same embedded logo the app's own header uses.
+  var logoBlock = LOGO_SRC
+    ? '<div style="text-align:center;margin:0 0 14px;"><img src="' + LOGO_SRC + '" alt="' + esc(STATE.orgName || 'Company') + ' logo" style="max-height:64px;max-width:240px;"></div>'
+    : '';
   return '<!doctype html><html><head><meta charset="utf-8">' +
     '<title>' + esc(title) + '</title></head>' +
-    '<body style="margin:0;padding:16px;background:#fff;">' +
+    '<body style="margin:0;padding:20px;background:#fff;">' +
+    logoBlock +
     '<table style="border-collapse:collapse;font-family:Arial,Helvetica,sans-serif;">' +
     tableHTML +
     '</table></body></html>';
@@ -1000,14 +1071,18 @@ function employeeTimesheetExcelHTML(emp, monthKey){
 
   var t = monthTotals(emp.id, monthKey);
   html += '<tr>' + xlTd('', 'border:none;padding:8px;', 8) + '</tr>';
+  // Styled to stand out from the rest of the sheet — same accent
+  // treatment as the header row — so the month's total hours are the
+  // easiest thing on the page to spot.
+  var totalStyle = XL_CELL+'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';';
   html += '<tr>' +
-    xlTd('Totals', XL_CELL+'font-weight:700;background:#F7F8F9;') +
-    xlTd('Days Present: '+t.daysPresent, XL_CELL) +
-    xlTd('Days Absent: '+t.daysAbsent, XL_CELL, 2) +
-    xlTd(t.totalHrs, XL_CELL+'text-align:center;') +
-    xlTd(t.regHrs, XL_CELL+'text-align:center;') +
-    xlTd(t.otHrs, XL_CELL+'text-align:center;') +
-    xlTd('', XL_CELL) +
+    xlTd('TOTALS', totalStyle) +
+    xlTd('Days Present: '+t.daysPresent, totalStyle) +
+    xlTd('Days Absent: '+t.daysAbsent, totalStyle, 2) +
+    xlTd(t.totalHrs, totalStyle+'text-align:center;') +
+    xlTd(t.regHrs, totalStyle+'text-align:center;') +
+    xlTd(t.otHrs, totalStyle+'text-align:center;') +
+    xlTd('', totalStyle) +
   '</tr>';
 
   return excelHTMLDoc('Timesheet — ' + formatName(emp.name) + ' — ' + monthKeyLabel(monthKey), html);
@@ -1043,7 +1118,18 @@ function attendanceEmployeeRowHTML(emp, shift, monthKey){
   }
   row += xlTd(p, XL_CELL+'font-weight:700;text-align:center;');
   row += xlTd(a, XL_CELL+'font-weight:700;text-align:center;');
-  return '<tr>' + row + '</tr>';
+  // Returns the per-employee Present/Absent counts alongside the row's
+  // HTML (not just the string) so callers that need a totals row —
+  // attendanceGridExcelHTML below — don't have to recompute them by
+  // re-walking every day a second time.
+  return { html: '<tr>' + row + '</tr>', present: p, absent: a };
+}
+function attendanceTotalRowHTML(label, daysInMonth, present, absent, style){
+  var cells = xlTd(esc(label), style);
+  for(var d=1; d<=daysInMonth; d++){ cells += xlTd('', style); }
+  cells += xlTd(present, style+'text-align:center;');
+  cells += xlTd(absent, style+'text-align:center;');
+  return '<tr>' + cells + '</tr>';
 }
 function attendanceLegendRowHTML(totalCols, text){
   return '<tr>' + xlTd('', 'border:none;padding:8px;', totalCols) + '</tr>' +
@@ -1062,6 +1148,7 @@ function attendanceGridExcelHTML(monthKey){
   html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
 
   var groupOrder = attendanceGroupOrder();
+  var companyP = 0, companyA = 0;
   groupOrder.forEach(function(shift, gi){
     var emps = byShift[shift] || [];
     html += '<tr>' + xlTd(esc(attendanceGroupBanner(shift)), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
@@ -1070,14 +1157,25 @@ function attendanceGridExcelHTML(monthKey){
     if(!emps.length){
       html += '<tr>' + xlTd('No one on this shift yet.', XL_CELL+'font-style:italic;color:'+XL.inkSoft+';', totalCols) + '</tr>';
     } else {
+      var shiftP = 0, shiftA = 0;
       emps.forEach(function(emp){
-        html += attendanceEmployeeRowHTML(emp, shift, monthKey);
+        var r = attendanceEmployeeRowHTML(emp, shift, monthKey);
+        html += r.html;
+        shiftP += r.present; shiftA += r.absent;
       });
+      html += attendanceTotalRowHTML('Shift Total', mi.daysInMonth, shiftP, shiftA, XL_CELL+'font-weight:700;background:#F7F8F9;');
+      companyP += shiftP; companyA += shiftA;
     }
     if(gi < groupOrder.length - 1){
       html += '<tr>' + xlTd('', 'border:none;padding:6px;', totalCols) + '</tr>';
     }
   });
+
+  // The overall sum across every shift — the "total" for the whole
+  // company at a glance, styled to match the header banner so it's
+  // unmistakably the headline number on the page.
+  html += '<tr>' + xlTd('', 'border:none;padding:6px;', totalCols) + '</tr>';
+  html += attendanceTotalRowHTML('Company Total', mi.daysInMonth, companyP, companyA, XL_CELL+'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';');
 
   html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside that shift’s schedule.');
 
@@ -1101,9 +1199,16 @@ function allEmployeesSummaryExcelHTML(monthKey){
   if(!emps.length){
     html += '<tr>' + xlTd('No active employees yet.', XL_CELL+'font-style:italic;color:'+XL.inkSoft+';', totalCols) + '</tr>';
   } else {
+    var grand = { daysPresent:0, daysAbsent:0, totalHrs:0, regHrs:0, otHrs:0, openConcerns:0 };
     emps.forEach(function(emp){
       var t = monthTotals(emp.id, monthKey);
       var openCount = openConcernsFor(emp.id).length;
+      grand.daysPresent += t.daysPresent;
+      grand.daysAbsent += t.daysAbsent;
+      grand.totalHrs += t.totalHrs;
+      grand.regHrs += t.regHrs;
+      grand.otHrs += t.otHrs;
+      grand.openConcerns += openCount;
       html += '<tr>' +
         xlTd(esc(formatName(emp.name)), XL_CELL+'font-weight:600;') +
         xlTd(esc(emp.department || ''), XL_CELL) +
@@ -1117,6 +1222,21 @@ function allEmployeesSummaryExcelHTML(monthKey){
         xlTd(openCount, XL_CELL+'text-align:center;'+(openCount>0?'color:'+XL.bad+';font-weight:700;background:'+XL.badSoft+';':'')) +
         '</tr>';
     });
+    // Company-wide grand total, styled to match the header so the sum of
+    // everyone's hours is the easiest number on the sheet to find.
+    var gStyle = XL_CELL+'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';';
+    html += '<tr>' +
+      xlTd('TOTAL', gStyle) +
+      xlTd('', gStyle) +
+      xlTd('', gStyle) +
+      xlTd('', gStyle) +
+      xlTd(Math.round(grand.daysPresent*100)/100, gStyle+'text-align:center;') +
+      xlTd(Math.round(grand.daysAbsent*100)/100, gStyle+'text-align:center;') +
+      xlTd(Math.round(grand.totalHrs*100)/100, gStyle+'text-align:center;') +
+      xlTd(Math.round(grand.regHrs*100)/100, gStyle+'text-align:center;') +
+      xlTd(Math.round(grand.otHrs*100)/100, gStyle+'text-align:center;') +
+      xlTd(grand.openConcerns, gStyle+'text-align:center;') +
+      '</tr>';
   }
 
   return excelHTMLDoc('SDI Timesheet Summary — ' + monthKeyLabel(monthKey), html);
@@ -1132,7 +1252,7 @@ function employeeAttendanceExcelHTML(emp, monthKey){
   html += '<tr>' + xlTd(esc(monthKeyLabel(monthKey)), 'font-size:12px;color:'+XL.inkSoft+';text-align:center;padding:0 0 10px;border:none;', totalCols) + '</tr>';
   html += '<tr>' + xlTd(esc(ATTENDANCE_GROUP_BANNER[shift] || emp.shiftLabel || ''), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
   html += attendanceDayHeaderRowHTML(monthKey);
-  html += attendanceEmployeeRowHTML(emp, shift, monthKey);
+  html += attendanceEmployeeRowHTML(emp, shift, monthKey).html;
   html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside this shift’s schedule.');
 
   return excelHTMLDoc('Attendance — ' + formatName(emp.name) + ' — ' + monthKeyLabel(monthKey), html);
@@ -1282,7 +1402,9 @@ function adminEmpSearchHTML(selectedEmp){
       '<div id="admin-emp-results" class="autocomplete-results" hidden></div>' +
     '</label>' +
     (selectedEmp ?
-      '<span id="admin-emp-selected-name" class="pill pill-good" style="margin-bottom:9px;">Editing: ' + esc(formatName(selectedEmp.name)) + '</span>'
+      '<span id="admin-emp-selected-name" class="pill pill-good" style="margin-bottom:9px; display:inline-flex; align-items:center; gap:6px;">Editing: ' + esc(formatName(selectedEmp.name)) +
+        '<button type="button" data-action="admin-clear-emp-selection" title="Clear selection" aria-label="Clear selection" style="background:none; border:none; cursor:pointer; color:inherit; font-weight:700; font-size:15px; line-height:1; padding:0;">&times;</button>' +
+      '</span>'
       : '') +
   '</div>';
 }
@@ -1693,19 +1815,29 @@ function viewEmployeeDash(emp){
   }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
   var myRequestsList = myRequests.length ? myRequests.map(myRequestRowHTML).join('') : '<p class="empty">No requests sent yet.</p>';
 
+  var myAnnouncements = (STATE.myNotifications || []).filter(function(n){
+    return n.type === 'announcement' || n.type === 'reminder';
+  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+  var announcementsList = myAnnouncements.length ? myAnnouncements.map(announcementRowHTML).join('') : '<p class="empty">Nothing from ' + esc(STATE.primaryAdmin || 'the office') + ' yet.</p>';
+
   return '' +
   '<div class="stack" style="gap:24px;">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
-      '<div>' +
-        '<span class="eyebrow">' + esc(emp.department || '') + ' · ' + esc(emp.position || '') + '</span>' +
-        '<h1 class="section-title" style="font-size:28px;">' + esc(formatName(emp.name)) + '</h1>' +
-        '<p class="muted" style="margin:2px 0 0;">' + esc(emp.shiftLabel || '') + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
+      '<div class="row" style="gap:14px; align-items:center;">' +
+        avatarHTML(emp.photoDataUrl, emp.name, 60) +
+        '<div>' +
+          '<span class="eyebrow">' + esc(emp.department || '') + ' · ' + esc(emp.position || '') + '</span>' +
+          '<h1 class="section-title" style="font-size:28px;">' + esc(formatName(emp.name)) + '</h1>' +
+          '<p class="muted" style="margin:2px 0 0;">' + esc(emp.shiftLabel || '') + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
+        '</div>' +
       '</div>' +
-      '<div class="row">' +
+      '<div class="row" style="flex-wrap:wrap;">' +
         '<button class="btn btn-sm" data-action="download-my-timesheet">Download Timesheet</button>' +
         '<button class="btn btn-sm" data-action="download-my-attendance">Download Attendance</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="notify-admin-open">Notify Admin</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="change-passcode-open">Change Passcode</button>' +
+        '<label class="btn btn-sm btn-ghost" for="my-photo-input" style="cursor:pointer; margin:0;">' + (emp.photoDataUrl ? 'Change Photo' : 'Add Photo') + '<input type="file" id="my-photo-input" accept="image/*" style="display:none;"></label>' +
+        (emp.photoDataUrl ? '<button class="btn btn-sm btn-ghost" data-action="remove-my-photo">Remove Photo</button>' : '') +
       '</div>' +
     '</div>' +
 
@@ -1742,6 +1874,22 @@ function viewEmployeeDash(emp){
       '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Late, absence, sick leave and vacation leave requests you\'ve sent to ' + esc(STATE.primaryAdmin) + '. Vacation leave needs Management approval; the rest are just for their records.</p>' +
       myRequestsList +
     '</div>' +
+
+    '<div class="card card-pad stack">' +
+      '<h2 style="font-size:18px;">Announcements</h2>' +
+      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Updates and reminders sent out by the office.</p>' +
+      announcementsList +
+    '</div>' +
+  '</div>';
+}
+function announcementRowHTML(n){
+  var isReminder = n.type === 'reminder';
+  return '<div class="card-pad" style="border:1px solid var(--line); border-radius:10px; padding:12px 14px;">' +
+    '<div class="row" style="gap:8px; align-items:center;">' +
+      '<span class="pill ' + (isReminder ? 'pill-warn' : 'pill-accent') + '">' + (isReminder ? 'Reminder' : 'Update') + '</span>' +
+      '<span class="muted" style="font-size:11px;">' + esc(fmtNotifWhen(n.createdAt)) + '</span>' +
+    '</div>' +
+    '<div style="font-size:13.5px; margin-top:6px;">' + esc(n.message || '') + '</div>' +
   '</div>';
 }
 
@@ -2089,7 +2237,8 @@ function adminNotificationsTab(){
     '</div>';
   }).join('') : '<p class="empty">Nothing here.</p>';
 
-  return '<div class="stack">' +
+  return '<div class="stack" style="gap:18px;">' +
+    broadcastComposerHTML() +
     '<div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">' +
       '<select id="notif-filter-select" style="width:auto; min-width:200px;">' + filterOptions + '</select>' +
       '<div class="row" style="gap:8px;">' +
@@ -2098,6 +2247,30 @@ function adminNotificationsTab(){
       '</div>' +
     '</div>' +
     '<div class="stack" style="gap:10px;">' + rows + '</div>' +
+  '</div>';
+}
+/* Whether the signed-in admin may broadcast — the primary admin always
+   can; anyone else needs it granted via the toggle in the Admins table
+   below (People & Access), which only the primary admin sees/controls. */
+function canBroadcastAsMe(){
+  if(!session.adminName) return false;
+  if(session.adminName === STATE.primaryAdmin) return true;
+  return !!(STATE.adminBroadcastAccess && STATE.adminBroadcastAccess[session.adminName]);
+}
+function broadcastComposerHTML(){
+  if(!canBroadcastAsMe()) return '';
+  return '<div class="card card-pad stack" style="gap:10px;">' +
+    '<h2 style="font-size:16px; margin:0;">Send an announcement</h2>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Goes out to every active employee\'s Announcements list right away — good for company-wide updates or a daily reminder.</p>' +
+    '<div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
+      '<label class="field" style="min-width:160px;">Type' +
+        '<select id="broadcast-kind"><option value="announcement">New update</option><option value="reminder">Daily reminder</option></select>' +
+      '</label>' +
+    '</div>' +
+    '<textarea id="broadcast-message" placeholder="e.g. Don\'t forget to clock out before you leave today."></textarea>' +
+    '<div class="row" style="justify-content:flex-end;">' +
+      '<button class="btn btn-primary btn-sm" data-action="broadcast-message-submit">Send to Everyone</button>' +
+    '</div>' +
   '</div>';
 }
 
@@ -2138,13 +2311,14 @@ function adminPeopleTab(){
     // look one up — Reset is the only recovery path when someone forgets.
     var passcodeCell = e.passcodeSet ? '<span class="muted">Set</span>' : '<span class="muted">Not set</span>';
     return '<tr>' +
-      '<td>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</td>' +
+      '<td><div class="row" style="gap:8px; align-items:center;">' + avatarHTML(e.photoDataUrl, e.name, 26) + '<span>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</span></div></td>' +
       '<td class="muted">' + esc(e.email || '—') + '</td>' +
       '<td>' + esc(e.department||'') + '</td>' +
       '<td>' + esc(e.position||'') + '</td>' +
       '<td><span class="badge-shift">' + esc(shiftName(e.shift)) + '</span></td>' +
       '<td>' + passcodeCell + '</td>' +
       '<td>' + (e.passcodeSet ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (e.photoDataUrl ? '<button class="btn btn-sm" data-action="remove-employee-photo" data-id="' + esc(e.id) + '">Remove Photo</button>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="edit-employee-open" data-id="' + esc(e.id) + '">Edit</button></td>' +
       '<td>' + (e.active
           ? '<button class="btn btn-sm btn-danger" data-action="toggle-employee-active" data-id="' + esc(e.id) + '">Deactivate</button>'
@@ -2154,12 +2328,42 @@ function adminPeopleTab(){
     '</tr>';
   }).join('');
 
+  var isMePrimary = session.adminName === STATE.primaryAdmin;
+  var myPhoto = (STATE.adminPhotos && STATE.adminPhotos[session.adminName]) || null;
+  var myAdminAccountCard = '<div class="card card-pad stack" style="gap:12px;">' +
+    '<h2 style="font-size:17px; margin:0;">My Admin Account</h2>' +
+    '<div class="row" style="gap:14px; align-items:center;">' +
+      avatarHTML(myPhoto, session.adminName, 52) +
+      '<div class="row" style="gap:8px; flex-wrap:wrap;">' +
+        '<label class="btn btn-sm" for="my-admin-photo-input" style="cursor:pointer; margin:0;">' + (myPhoto ? 'Change Photo' : 'Add Photo') + '<input type="file" id="my-admin-photo-input" accept="image/*" style="display:none;"></label>' +
+        (myPhoto ? '<button class="btn btn-sm btn-ghost" data-action="remove-my-admin-photo">Remove Photo</button>' : '') +
+        '<button class="btn btn-sm btn-ghost" data-action="admin-change-passcode-open">Change My Passcode</button>' +
+      '</div>' +
+    '</div>' +
+    '<p class="muted" style="margin:0; font-size:12px;">Signed in as <strong>' + esc(session.adminName) + '</strong>' + (isMePrimary ? ' (Primary)' : '') + '. Setting your own passcode here replaces the shared admin password for your own sign-ins from then on — if you forget it, ' + esc(STATE.primaryAdmin || 'the primary admin') + ' can reset it for you below.</p>' +
+  '</div>';
+
   var adminRows = STATE.admins.map(function(a){
     var isPrimary = a === STATE.primaryAdmin;
     var email = (STATE.adminEmails && STATE.adminEmails[a]) || '';
+    var photo = (STATE.adminPhotos && STATE.adminPhotos[a]) || null;
+    var hasOwnPasscode = !!(STATE.adminPasscodeSet && STATE.adminPasscodeSet[a]);
+    var canBroadcastThem = !!(STATE.adminBroadcastAccess && STATE.adminBroadcastAccess[a]);
+    // Only the primary admin can manage another admin's credentials or
+    // broadcast access — everyone manages their own via My Admin Account
+    // above, matching how any admin can manage an employee's but only
+    // the primary manages a fellow admin's.
+    var canManage = isMePrimary && !isPrimary;
     return '<tr>' +
-      '<td>' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</td>' +
+      '<td><div class="row" style="gap:8px; align-items:center;">' + avatarHTML(photo, a, 26) + '<span>' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</span></div></td>' +
       '<td class="muted">' + esc(email || '—') + '</td>' +
+      '<td class="muted">' + (hasOwnPasscode ? 'Personal' : 'Shared') + '</td>' +
+      '<td>' + (canManage
+          ? '<label class="row" style="gap:6px; align-items:center; font-size:12.5px; font-weight:400;"><input type="checkbox" data-action="toggle-admin-broadcast" data-name="' + esc(a) + '"' + (canBroadcastThem ? ' checked' : '') + '> Can send announcements</label>'
+          : (isPrimary ? '<span class="muted">Always allowed</span>' : (canBroadcastThem ? '<span class="muted">Allowed</span>' : '<span class="muted">—</span>'))) +
+      '</td>' +
+      '<td>' + (canManage && hasOwnPasscode ? '<button class="btn btn-sm" data-action="reset-admin-passcode-open" data-name="' + esc(a) + '">Reset Passcode</button>' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (canManage && photo ? '<button class="btn btn-sm" data-action="remove-admin-photo" data-name="' + esc(a) + '">Remove Photo</button>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="edit-admin-open" data-name="' + esc(a) + '">Edit</button></td>' +
       '<td>' + (isPrimary ? '<span class="muted">Cannot be removed</span>' : '<button class="btn btn-sm btn-danger" data-action="remove-admin" data-name="' + esc(a) + '">Remove</button>') + '</td>' +
     '</tr>';
@@ -2176,20 +2380,21 @@ function adminPeopleTab(){
         sortSelect +
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Shift</th><th>Passcode</th><th></th><th></th><th></th><th></th></tr></thead>' +
+        '<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Shift</th><th>Passcode</th><th></th><th></th><th></th><th></th><th></th></tr></thead>' +
         '<tbody>' + empRows + '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Each person sets their own passcode the first time they open the app. Reset clears it so they can set a new one — use this if someone forgets theirs. Deactivate keeps their full history and blocks them from logging in — they\'ll see a message to email ' + esc(REACTIVATION_EMAIL) + ' for reactivation. Delete is permanent and removes them and all their entries for good.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Each person sets their own passcode the first time they open the app. Reset clears it so they can set a new one — use this if someone forgets theirs. Remove Photo takes off a profile picture that doesn\'t belong — a photo they can add back anytime, but only an admin can take down. Deactivate keeps their full history and blocks them from logging in — they\'ll see a message to email ' + esc(REACTIVATION_EMAIL) + ' for reactivation. Delete is permanent and removes them and all their entries for good.</p></div>' +
     '</div>' +
+    myAdminAccountCard +
     '<div class="card">' +
       '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
         '<h2 style="font-size:17px;">Admins</h2>' +
         '<button class="btn btn-sm btn-primary" data-action="add-admin-open">+ Add Admin</button>' +
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table class="compact"><thead><tr><th>Name</th><th>Email</th><th></th><th></th></tr></thead><tbody>' + adminRows + '</tbody></table>' +
+        '<table class="compact"><thead><tr><th>Name</th><th>Email</th><th>Passcode</th><th>Announcements</th><th></th><th></th><th></th><th></th></tr></thead><tbody>' + adminRows + '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus the shared admin password — email is optional, just for contact purposes. Removing someone here blocks their admin login immediately.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus either their own personal passcode (set from My Admin Account above) or, until they set one, the shared admin password. Only ' + esc(STATE.primaryAdmin || 'the primary admin') + ' can reset another admin\'s passcode, remove their photo, or grant them access to send announcements — everyone manages their own account otherwise. Removing an admin here blocks their login immediately.</p></div>' +
     '</div>' +
     '<div class="card">' +
       '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
@@ -2406,6 +2611,31 @@ function renderModalInto(app){
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-admin-submit">Save</button>'
     );
+  } else if(ui.modal === 'adminChangePasscode'){
+    var apcErr = ui.modalData.pcError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.pcError) + '</p>' : '';
+    html = modalShell('Change my passcode',
+      '<div class="stack" style="gap:12px;">' +
+        '<p class="muted" style="margin:0; font-size:12.5px;">Current is whatever you\'ve been signing in with — your own passcode if you\'ve set one, otherwise the shared admin password.</p>' +
+        '<label class="field">Current<input type="password" id="admin-pc-current" autocomplete="current-password"></label>' +
+        '<label class="field">New passcode (4+ characters)<input type="password" id="admin-pc-new-1" autocomplete="new-password"></label>' +
+        '<label class="field">Confirm new passcode<input type="password" id="admin-pc-new-2" autocomplete="new-password"></label>' +
+        apcErr +
+      '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="admin-change-passcode-submit">Save</button>'
+    );
+  } else if(ui.modal === 'resetAdminPasscodeConfirm'){
+    html = modalShell('Reset passcode',
+      '<p style="margin:0; font-size:14px;">Reset <strong>' + esc(ui.modalData.name || '') + '</strong>’s personal passcode? They’ll need to sign in with the shared admin password until they set a new personal one for themselves.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="reset-admin-passcode-submit">Reset Passcode</button>'
+    );
+  } else if(ui.modal === 'confirmRemovePhoto'){
+    html = modalShell('Remove photo',
+      '<p style="margin:0; font-size:14px;">Remove <strong>' + esc(ui.modalData.name || '') + '</strong>’s profile photo? They can add a new one anytime.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="confirm-remove-photo-submit">Remove Photo</button>'
+    );
   } else {
     return;
   }
@@ -2555,6 +2785,33 @@ function wireInputsAfterRender(){
       };
       reader.onerror = function(){ toast('Couldn’t read that file.', 'error'); };
       reader.readAsText(file);
+    });
+  }
+
+  var myPhotoInput = $('my-photo-input');
+  if(myPhotoInput){
+    myPhotoInput.addEventListener('change', function(){
+      var file = myPhotoInput.files && myPhotoInput.files[0];
+      if(!file) return;
+      resizeImageFile(file, function(dataUrl, err){
+        if(err){ toast(err, 'error'); return; }
+        apiPersist('set-employee-photo', { token: session.token, photoDataUrl: dataUrl },
+          function(s){ var e = getEmployee(session.employeeId); if(e) e.photoDataUrl = dataUrl; },
+          { successMsg: 'Photo updated' });
+      });
+    });
+  }
+  var myAdminPhotoInput = $('my-admin-photo-input');
+  if(myAdminPhotoInput){
+    myAdminPhotoInput.addEventListener('change', function(){
+      var file = myAdminPhotoInput.files && myAdminPhotoInput.files[0];
+      if(!file) return;
+      resizeImageFile(file, function(dataUrl, err){
+        if(err){ toast(err, 'error'); return; }
+        apiPersist('admin-change-photo', { token: session.token, photoDataUrl: dataUrl },
+          function(s){ if(!s.adminPhotos) s.adminPhotos = {}; s.adminPhotos[session.adminName] = dataUrl; },
+          { successMsg: 'Photo updated' });
+      });
     });
   }
 }
@@ -2826,6 +3083,87 @@ var handlers = {
       ui.modalData.pcError = err && err.code === 'wrong_current_passcode' ? 'Current passcode is incorrect.' : apiErrorMessage(err);
       render();
     });
+  },
+  'remove-my-photo': function(){
+    apiPersist('set-employee-photo', { token: session.token, photoDataUrl: null },
+      function(s){ var e = getEmployee(session.employeeId); if(e) e.photoDataUrl = null; },
+      { successMsg: 'Photo removed' });
+  },
+  'admin-change-passcode-open': function(){ ui.modal = 'adminChangePasscode'; ui.modalData = {}; render(); },
+  'admin-change-passcode-submit': function(){
+    var cur = ($('admin-pc-current') || {}).value || '';
+    var n1 = ($('admin-pc-new-1') || {}).value || '';
+    var n2 = ($('admin-pc-new-2') || {}).value || '';
+    if(n1.length < 4){ ui.modalData.pcError = 'New passcode must be at least 4 characters.'; render(); return; }
+    if(n1 !== n2){ ui.modalData.pcError = 'New passcodes don’t match.'; render(); return; }
+    ui.modalData.pcError = null;
+    ui.modal = null;
+    callApi('admin-change-passcode', { token: session.token, current: cur, next: n1 }).then(function(){
+      if(!STATE.adminPasscodeSet) STATE.adminPasscodeSet = {};
+      STATE.adminPasscodeSet[session.adminName] = true;
+      toast('Passcode changed', 'success');
+      render();
+    }).catch(function(err){
+      ui.modal = 'adminChangePasscode';
+      ui.modalData.pcError = err && err.code === 'wrong_current_passcode' ? 'Current is incorrect.' : apiErrorMessage(err);
+      render();
+    });
+  },
+  'remove-my-admin-photo': function(){
+    apiPersist('admin-change-photo', { token: session.token, photoDataUrl: null },
+      function(s){ if(s.adminPhotos) delete s.adminPhotos[session.adminName]; },
+      { successMsg: 'Photo removed' });
+  },
+  'reset-admin-passcode-open': function(el){
+    ui.modal = 'resetAdminPasscodeConfirm'; ui.modalData = { name: el.dataset.name }; render();
+  },
+  'reset-admin-passcode-submit': function(){
+    var name = ui.modalData.name;
+    ui.modal = null;
+    apiPersist('admin-reset-admin-passcode', { token: session.token, name: name },
+      function(s){ if(s.adminPasscodeSet) s.adminPasscodeSet[name] = false; },
+      { successMsg: 'Passcode reset' });
+  },
+  'toggle-admin-broadcast': function(el){
+    var name = el.dataset.name;
+    var canBroadcast = el.checked;
+    apiPersist('set-admin-broadcast-access', { token: session.token, name: name, canBroadcast: canBroadcast },
+      function(s){ if(!s.adminBroadcastAccess) s.adminBroadcastAccess = {}; s.adminBroadcastAccess[name] = canBroadcast; },
+      { successMsg: canBroadcast ? 'Announcement access granted' : 'Announcement access removed' });
+  },
+  'remove-employee-photo': function(el){
+    var emp = getEmployee(el.dataset.id);
+    ui.modal = 'confirmRemovePhoto'; ui.modalData = { kind: 'employee', id: el.dataset.id, name: emp ? formatName(emp.name) : '' }; render();
+  },
+  'remove-admin-photo': function(el){
+    ui.modal = 'confirmRemovePhoto'; ui.modalData = { kind: 'admin', name: el.dataset.name }; render();
+  },
+  'confirm-remove-photo-submit': function(){
+    var d = ui.modalData;
+    ui.modal = null;
+    if(d.kind === 'employee'){
+      apiPersist('admin-remove-employee-photo', { token: session.token, employeeId: d.id },
+        function(s){ var e = s.employees.filter(function(x){ return x.id === d.id; })[0]; if(e) e.photoDataUrl = null; },
+        { successMsg: 'Photo removed' });
+    } else {
+      apiPersist('admin-remove-admin-photo', { token: session.token, name: d.name },
+        function(s){ if(s.adminPhotos) delete s.adminPhotos[d.name]; },
+        { successMsg: 'Photo removed' });
+    }
+  },
+  'broadcast-message-submit': function(){
+    var kind = ($('broadcast-kind') || {}).value || 'announcement';
+    var message = (($('broadcast-message') || {}).value || '').trim();
+    if(!message){ toast('Write a message first.', 'error'); return; }
+    callApi('broadcast-message', { token: session.token, kind: kind, message: message }).then(function(data){
+      toast('Sent to ' + (data.count || 0) + ' employee' + (data.count === 1 ? '' : 's'), 'success');
+      var ta = $('broadcast-message'); if(ta) ta.value = '';
+      render();
+    }).catch(function(err){ toast(apiErrorMessage(err), 'error'); });
+  },
+  'admin-clear-emp-selection': function(){
+    ui.adminEmpId = null;
+    render();
   },
   'month-prev': function(el){
     if(el.dataset.scope === 'employee'){ ui.employeeMonth = shiftMonthKey(empMonth(), -1); }
