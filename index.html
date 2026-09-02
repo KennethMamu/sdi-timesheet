@@ -1,3 +1,4 @@
+
 <meta charset="utf-8">
 <title>SDI Timesheet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -372,6 +373,10 @@ function buildFullDocument(state){
 var SUPABASE_URL = 'https://egzkmwoctpqkprqmbrux.supabase.co';
 var SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVnemttd29jdHBxa3BycW1icnV4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgxNTkyMzUsImV4cCI6MjEwMzczNTIzNX0.eCkVfdTe4swKupE0g000X_TSKaC2DU7jY3vyfBVNUnE';
 var API_URL = SUPABASE_URL + '/functions/v1/api';
+// Display-only — the server hardcodes this same address independently and
+// never actually reads it from anywhere client-editable, so this is just
+// so the "forgot passcode" modal can tell the primary admin where to look.
+var PRIMARY_RECOVERY_EMAIL = 'kenneth.mamuric@steeldrafting-innovations.com';
 
 function callApi(action, payload){
   var body = Object.assign({ action: action }, payload || {});
@@ -659,17 +664,35 @@ function timeToMinutes(t){
   if(isNaN(h) || isNaN(m)) return null;
   return h*60+m;
 }
-function computeHours(timeIn, timeOut){
+/* lunchMin/personalMin are minutes the employee took during the shift
+   (entered on the punch card just before clocking out, or edited by an
+   admin in Edit Entries) — subtracted from the raw Time In→Time Out span
+   before Total/Reg/OT are worked out, same as how a paper timesheet
+   deducts a lunch break from hours worked. */
+function computeHours(timeIn, timeOut, lunchMin, personalMin){
   var a = timeToMinutes(timeIn), b = timeToMinutes(timeOut);
   if(a === null || b === null) return { total:null, reg:null, ot:null };
   var diff = b - a;
   if(diff < 0) diff += 24*60; // overnight guard, mirrors Excel MOD()
+  var deduct = (Number(lunchMin) || 0) + (Number(personalMin) || 0);
+  diff = Math.max(0, diff - deduct);
   var total = Math.round((diff/60) * 100) / 100;
   var reg = Math.min(total, 8);
   var ot = Math.max(total - 8, 0);
   return { total: total, reg: Math.round(reg*100)/100, ot: Math.round(ot*100)/100 };
 }
 function fmtHrs(n){ return (n === null || n === undefined) ? '—' : n.toFixed(2); }
+/* Reads a lunch/personal-minutes number input by id and returns a clamped
+   non-negative integer, or null when left blank — matches the server's
+   own parseDayMinutes so a value round-trips the same way either side. */
+function parseMinutesField(id){
+  var el = $(id);
+  var raw = el ? el.value : '';
+  if(raw === '' || raw === null || typeof raw === 'undefined') return null;
+  var n = parseInt(raw, 10);
+  if(isNaN(n) || n < 0) return null;
+  return Math.min(n, 480);
+}
 function nowTimeHHMM(){
   var d = new Date();
   return pad2(d.getHours()) + ':' + pad2(d.getMinutes());
@@ -704,25 +727,28 @@ function getEntry(empId, monthKey, day){
 function setEntry(empId, monthKey, day, patch){
   if(!STATE.entries[empId]) STATE.entries[empId] = {};
   if(!STATE.entries[empId][monthKey]) STATE.entries[empId][monthKey] = {};
-  var cur = STATE.entries[empId][monthKey][String(day)] || { status:null, timeIn:null, timeOut:null, notes:null };
+  var cur = STATE.entries[empId][monthKey][String(day)] || { status:null, timeIn:null, timeOut:null, notes:null, lunchMinutes:null, personalMinutes:null };
   var next = Object.assign({}, cur, patch);
   STATE.entries[empId][monthKey][String(day)] = next;
 }
 function monthTotals(empId, monthKey){
   var mi = monthInfo(monthKey);
-  var daysPresent=0, daysAbsent=0, daysLate=0, minutesLateTotal=0, totalHrs=0, regHrs=0, otHrs=0;
+  var daysPresent=0, daysAbsent=0, daysLate=0, minutesLateTotal=0, totalHrs=0, regHrs=0, otHrs=0, lunchMin=0, personalMin=0;
   for(var d=1; d<=mi.daysInMonth; d++){
     var entry = getEntry(empId, monthKey, d);
     if(!entry) continue;
     if(entry.status === 'P') daysPresent++;
     if(entry.status === 'L'){ daysPresent++; daysLate++; minutesLateTotal += entry.minutesLate || 0; }
     if(entry.status === 'A') daysAbsent++;
-    var h = computeHours(entry.timeIn, entry.timeOut);
+    var h = computeHours(entry.timeIn, entry.timeOut, entry.lunchMinutes, entry.personalMinutes);
     if(h.total !== null){ totalHrs += h.total; regHrs += h.reg; otHrs += h.ot; }
+    lunchMin += entry.lunchMinutes || 0;
+    personalMin += entry.personalMinutes || 0;
   }
   return {
     daysPresent: daysPresent, daysAbsent: daysAbsent, daysLate: daysLate, minutesLateTotal: minutesLateTotal,
-    totalHrs: Math.round(totalHrs*100)/100, regHrs: Math.round(regHrs*100)/100, otHrs: Math.round(otHrs*100)/100
+    totalHrs: Math.round(totalHrs*100)/100, regHrs: Math.round(regHrs*100)/100, otHrs: Math.round(otHrs*100)/100,
+    lunchMin: lunchMin, personalMin: personalMin
   };
 }
 function openConcernsFor(empId){
@@ -768,6 +794,13 @@ var API_ERROR_MESSAGES = {
   invalid_photo: 'That doesn’t look like a valid image.',
   photo_too_large: 'That image is too large — try a smaller photo.',
   empty_message: 'Write a message first.',
+  recovery_admin_only: 'Passcode recovery by email is only set up for the primary admin.',
+  too_soon: 'A code was already sent recently — check your email, or wait a bit before requesting another.',
+  email_send_failed: 'Couldn’t send the recovery email — try again shortly, or ask to have your passcode reset directly.',
+  no_pending_code: 'Request a new code first.',
+  code_expired: 'That code expired — request a new one.',
+  too_many_attempts: 'Too many wrong codes — request a new one.',
+  invalid_code: 'That code doesn’t match — check your email and try again.',
 };
 function apiErrorMessage(err){
   var code = err && err.code;
@@ -1011,16 +1044,16 @@ function employeeTimesheetExcelHTML(emp, monthKey){
   var monthOf = MONTH_NAMES[mi.month-1] + ' 1, ' + mi.year;
   var html = '';
 
-  html += '<tr>' + xlTd('TIMESHEET', 'background:'+XL.ink+';color:#fff;font-weight:700;font-size:18px;padding:14px;text-align:center;', 8) + '</tr>';
-  html += '<tr>' + xlTd('Blue text shows the fields filled in for this employee.', 'padding:4px 9px;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';border:none;', 8) + '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 8) + '</tr>';
+  html += '<tr>' + xlTd('TIMESHEET', 'background:'+XL.ink+';color:#fff;font-weight:700;font-size:18px;padding:14px;text-align:center;', 10) + '</tr>';
+  html += '<tr>' + xlTd('Blue text shows the fields filled in for this employee.', 'padding:4px 9px;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';border:none;', 10) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 10) + '</tr>';
 
   function fieldRow(l1, v1, l2, v2){
     return '<tr>' +
       xlTd(esc(l1), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-      xlTd(esc(v1) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 3) +
+      xlTd(esc(v1) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 4) +
       xlTd(esc(l2), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-      xlTd(esc(v2) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 3) +
+      xlTd(esc(v2) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 4) +
     '</tr>';
   }
   html += fieldRow('Employee Name', formatName(emp.name), 'Employee ID', '');
@@ -1028,18 +1061,18 @@ function employeeTimesheetExcelHTML(emp, monthKey){
   html += fieldRow('Manager', emp.manager||'', 'Position', emp.position||'');
   html += '<tr>' +
     xlTd('For the Month Of', XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-    xlTd(esc(monthOf), XL_CELL + 'color:'+XL.accent+';', 7) +
+    xlTd(esc(monthOf), XL_CELL + 'color:'+XL.accent+';', 9) +
   '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 8) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 10) + '</tr>';
 
-  var headers = ['DATE','DAY','TIME IN','TIME OUT','TOTAL HRS','REG HRS','OT HRS','NOTES'];
+  var headers = ['DATE','DAY','TIME IN','TIME OUT','LUNCH','PERSONAL','TOTAL HRS','REG HRS','OT HRS','NOTES'];
   html += '<tr>' + headers.map(function(h){
     return xlTd(h, XL_CELL + 'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';text-align:center;');
   }).join('') + '</tr>';
 
   for(var d=1; d<=mi.daysInMonth; d++){
     var entry = getEntry(emp.id, monthKey, d) || {};
-    var h = computeHours(entry.timeIn, entry.timeOut);
+    var h = computeHours(entry.timeIn, entry.timeOut, entry.lunchMinutes, entry.personalMinutes);
     var weekend = dateForDay(monthKey, d).getDay() === 0;
     var rowBg = weekend ? 'background:#F7F8F9;' : '';
     var valStyle = XL_CELL + rowBg + 'color:'+XL.accent+';text-align:center;';
@@ -1049,6 +1082,8 @@ function employeeTimesheetExcelHTML(emp, monthKey){
       xlTd(weekdayShort(monthKey,d), plainStyle) +
       xlTd(entry.timeIn?fmtTime12(entry.timeIn):'', valStyle) +
       xlTd(entry.timeOut?fmtTime12(entry.timeOut):'', valStyle) +
+      xlTd(entry.lunchMinutes?entry.lunchMinutes:'', valStyle) +
+      xlTd(entry.personalMinutes?entry.personalMinutes:'', valStyle) +
       xlTd(h.total===null?'':h.total, valStyle) +
       xlTd(h.reg===null?'':h.reg, valStyle) +
       xlTd(h.ot===null?'':h.ot, valStyle) +
@@ -1056,29 +1091,32 @@ function employeeTimesheetExcelHTML(emp, monthKey){
     '</tr>';
   }
 
-  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 8) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 10) + '</tr>';
   html += '<tr>' +
-    xlTd('Employee Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 3) +
+    xlTd('Employee Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
     xlTd('', 'border:none;padding:4px;') +
-    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 5) +
   '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:10px;', 8) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:10px;', 10) + '</tr>';
   html += '<tr>' +
-    xlTd('Manager Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 3) +
+    xlTd('Manager Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
     xlTd('', 'border:none;padding:4px;') +
-    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 5) +
   '</tr>';
 
   var t = monthTotals(emp.id, monthKey);
-  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 8) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 10) + '</tr>';
   // Styled to stand out from the rest of the sheet — same accent
   // treatment as the header row — so the month's total hours are the
-  // easiest thing on the page to spot.
+  // easiest thing on the page to spot. Lunch/Personal totals line up
+  // directly under their own columns, same as Total/Reg/OT.
   var totalStyle = XL_CELL+'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';';
   html += '<tr>' +
     xlTd('TOTALS', totalStyle) +
     xlTd('Days Present: '+t.daysPresent, totalStyle) +
     xlTd('Days Absent: '+t.daysAbsent, totalStyle, 2) +
+    xlTd(t.lunchMin?t.lunchMin+'m':'', totalStyle+'text-align:center;') +
+    xlTd(t.personalMin?t.personalMin+'m':'', totalStyle+'text-align:center;') +
     xlTd(t.totalHrs, totalStyle+'text-align:center;') +
     xlTd(t.regHrs, totalStyle+'text-align:center;') +
     xlTd(t.otHrs, totalStyle+'text-align:center;') +
@@ -1727,6 +1765,7 @@ function viewAdminLogin(){
         '<input type="password" id="admin-login-pass" placeholder="••••••" autocomplete="current-password">' +
       '</label>' +
       err +
+      '<button type="button" class="link-btn" style="align-self:flex-start; font-size:12.5px;" data-action="admin-forgot-passcode-open">Forgot your passcode?</button>' +
       '<div class="row" style="justify-content:space-between;">' +
         '<button class="btn btn-ghost" data-action="go-landing">Cancel</button>' +
         '<button class="btn btn-primary" data-action="admin-login-submit">Log In</button>' +
@@ -1755,19 +1794,37 @@ function punchCardHTML(emp, monthKey, today){
     '</div>';
   }
   if(entry.timeIn && !entry.timeOut){
-    return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
+    // Lunch/personal minutes are entered right here, just before clocking
+    // out — not clocked separately in real time — and get subtracted from
+    // today's hours the moment Time Out is pressed. An admin can still
+    // correct either number afterward from Edit Entries.
+    return '<div class="card card-pad stack punch-card" style="gap:14px;">' +
       '<div>' +
         '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
         '<div class="row" style="gap:8px; align-items:center; font-size:13px;">Clocked in at <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong>' + (entry.status === 'L' ? statusPillHTML('L', entry.minutesLate) : '') + '</div>' +
       '</div>' +
-      '<button class="btn btn-primary" data-action="punch-time-out">Time Out</button>' +
+      '<div class="row" style="gap:14px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap;">' +
+        '<div class="row" style="gap:10px;">' +
+          '<label class="field" style="margin:0;">Lunch (min)' +
+            '<input type="number" min="0" max="480" step="5" id="punch-lunch-minutes" placeholder="0" value="' + esc(entry.lunchMinutes != null ? entry.lunchMinutes : '') + '" style="width:76px;">' +
+          '</label>' +
+          '<label class="field" style="margin:0;">Personal (min)' +
+            '<input type="number" min="0" max="480" step="5" id="punch-personal-minutes" placeholder="0" value="' + esc(entry.personalMinutes != null ? entry.personalMinutes : '') + '" style="width:76px;">' +
+          '</label>' +
+        '</div>' +
+        '<button class="btn btn-primary" data-action="punch-time-out">Time Out</button>' +
+      '</div>' +
     '</div>';
   }
-  var h = computeHours(entry.timeIn, entry.timeOut);
+  var h = computeHours(entry.timeIn, entry.timeOut, entry.lunchMinutes, entry.personalMinutes);
+  var deductBits = [];
+  if(entry.lunchMinutes) deductBits.push(entry.lunchMinutes + ' min lunch');
+  if(entry.personalMinutes) deductBits.push(entry.personalMinutes + ' min personal');
+  var deductNote = deductBits.length ? ' <span class="muted">(−' + deductBits.join(', −') + ')</span>' : '';
   return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
     '<div>' +
       '<div class="eyebrow">Today — ' + esc(dateLabel) + '</div>' +
-      '<div style="font-size:13px;">Clocked <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong> – <strong>' + esc(fmtTime12(entry.timeOut)) + '</strong> · ' + esc(fmtHrs(h.total)) + ' hrs</div>' +
+      '<div style="font-size:13px;">Clocked <strong>' + esc(fmtTime12(entry.timeIn)) + '</strong> – <strong>' + esc(fmtTime12(entry.timeOut)) + '</strong> · ' + esc(fmtHrs(h.total)) + ' hrs' + deductNote + '</div>' +
     '</div>' +
     '<span class="pill pill-good">Done for today</span>' +
   '</div>';
@@ -1786,7 +1843,7 @@ function viewEmployeeDash(emp){
   var rows = '';
   for(var d=1; d<=mi.daysInMonth; d++){
     var entry = getEntry(emp.id, monthKey, d) || {};
-    var h = computeHours(entry.timeIn, entry.timeOut);
+    var h = computeHours(entry.timeIn, entry.timeOut, entry.lunchMinutes, entry.personalMinutes);
     var statusPill = statusPillHTML(entry.status, entry.minutesLate);
     var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
     var todayCls = (d === today) ? ' row-today' : '';
@@ -1797,6 +1854,8 @@ function viewEmployeeDash(emp){
       '<td>' + statusPill + '</td>' +
       '<td class="num mono">' + esc(entry.timeIn ? fmtTime12(entry.timeIn) : '—') + '</td>' +
       '<td class="num mono">' + esc(entry.timeOut ? fmtTime12(entry.timeOut) : '—') + '</td>' +
+      '<td class="num mono">' + esc(entry.lunchMinutes ? entry.lunchMinutes + 'm' : '—') + '</td>' +
+      '<td class="num mono">' + esc(entry.personalMinutes ? entry.personalMinutes + 'm' : '—') + '</td>' +
       '<td class="num mono">' + esc(fmtHrs(h.total)) + '</td>' +
       '<td class="num mono">' + esc(fmtHrs(h.reg)) + '</td>' +
       '<td class="num mono">' + (h.ot ? '<span class="pill pill-warn">' + esc(fmtHrs(h.ot)) + '</span>' : '<span class="muted">—</span>') + '</td>' +
@@ -1857,7 +1916,7 @@ function viewEmployeeDash(emp){
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
         '<table>' +
-          '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th class="num">Time In</th><th class="num">Time Out</th><th class="num">Total</th><th class="num">Reg</th><th class="num">OT</th><th>Notes</th><th>Concern</th></tr></thead>' +
+          '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th class="num">Time In</th><th class="num">Time Out</th><th class="num">Lunch</th><th class="num">Personal</th><th class="num">Total</th><th class="num">Reg</th><th class="num">OT</th><th>Notes</th><th>Concern</th></tr></thead>' +
           '<tbody>' + rows + '</tbody>' +
         '</table>' +
       '</div>' +
@@ -2093,6 +2152,8 @@ function adminEntriesTab(){
       '<td>' + timeFieldHTML('entry-timein', entry.timeIn) + '</td>' +
       '<td>' + timeFieldHTML('entry-timeout', entry.timeOut) + '</td>' +
       '<td><input type="number" min="0" class="entry-minlate" value="' + esc(entry.minutesLate != null ? entry.minutesLate : '') + '" placeholder="—" style="width:64px;" title="Minutes late (only used when Status is Late)"></td>' +
+      '<td><input type="number" min="0" max="480" class="entry-lunch" value="' + esc(entry.lunchMinutes != null ? entry.lunchMinutes : '') + '" placeholder="—" style="width:64px;" title="Lunch minutes taken that day (subtracted from hours)"></td>' +
+      '<td><input type="number" min="0" max="480" class="entry-personal" value="' + esc(entry.personalMinutes != null ? entry.personalMinutes : '') + '" placeholder="—" style="width:64px;" title="Personal time minutes taken that day (subtracted from hours)"></td>' +
       '<td><input type="text" class="entry-notes" value="' + esc(entry.notes || '') + '" placeholder="—" style="min-width:140px;"></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost" data-action="clear-entry-row" title="Clear status, times and notes for this day">Clear day</button></td>' +
     '</tr>';
@@ -2103,10 +2164,10 @@ function adminEntriesTab(){
       adminEmpSearchHTML(emp) +
       '<button class="btn btn-primary" data-action="save-entries">Save Changes</button>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand. Type your own number into Min Late alongside picking Late yourself only if you want to override that calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out, lunch/personal minutes and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically — lunch and personal minutes are subtracted from that day\'s hours, same as when an employee enters them themselves before clocking out. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand. Type your own number into Min Late alongside picking Late yourself only if you want to override that calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
     '<div class="table-wrap">' +
       '<table id="entries-editor-table">' +
-        '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Notes</th><th></th></tr></thead>' +
+        '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Lunch</th><th>Personal</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
     '</div>' +
@@ -2630,6 +2691,34 @@ function renderModalInto(app){
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-danger" data-action="reset-admin-passcode-submit">Reset Passcode</button>'
     );
+  } else if(ui.modal === 'adminForgotPasscode'){
+    var frErr = ui.modalData.frError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.frError) + '</p>' : '';
+    if(ui.modalData.stage === 'confirm'){
+      html = modalShell('Reset passcode by email',
+        '<div class="stack" style="gap:12px;">' +
+          '<p class="muted" style="margin:0; font-size:12.5px;">A 6-digit code was emailed to ' + esc(PRIMARY_RECOVERY_EMAIL) + '. It expires in 15 minutes.</p>' +
+          '<label class="field">Code<input type="text" inputmode="numeric" maxlength="6" id="admin-fr-code" placeholder="123456"></label>' +
+          '<label class="field">New passcode (4+ characters)<input type="password" id="admin-fr-new-1" autocomplete="new-password"></label>' +
+          '<label class="field">Confirm new passcode<input type="password" id="admin-fr-new-2" autocomplete="new-password"></label>' +
+          frErr +
+          '<button type="button" class="link-btn" style="font-size:12.5px;" id="admin-fr-resend-btn">Didn’t get it? Send another code</button>' +
+        '</div>',
+        '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+        '<button class="btn btn-primary" data-action="admin-forgot-passcode-confirm">Reset Passcode</button>'
+      );
+    } else {
+      html = modalShell('Forgot your passcode?',
+        '<div class="stack" style="gap:12px;">' +
+          '<p class="muted" style="margin:0; font-size:12.5px;">This only works for the primary admin — everyone else should ask ' + esc(STATE.primaryAdmin || 'the primary admin') + ' to reset their passcode from People &amp; Access. We’ll email a one-time code to ' + esc(PRIMARY_RECOVERY_EMAIL) + '.</p>' +
+          '<label class="field">Admin name' +
+            '<select id="admin-fr-name">' + (STATE.admins || []).map(function(a){ var sel = a === ui.modalData.name ? ' selected' : ''; return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>'; }).join('') + '</select>' +
+          '</label>' +
+          frErr +
+        '</div>',
+        '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+        '<button class="btn btn-primary" data-action="admin-forgot-passcode-send">Send Code</button>'
+      );
+    }
   } else if(ui.modal === 'confirmRemovePhoto'){
     html = modalShell('Remove photo',
       '<p style="margin:0; font-size:14px;">Remove <strong>' + esc(ui.modalData.name || '') + '</strong>’s profile photo? They can add a new one anytime.</p>',
@@ -2655,6 +2744,16 @@ function modalShell(title, body, foot){
 }
 
 function wireInputsAfterRender(){
+  // Deliberately not a data-action button: the generic modal Enter-submit
+  // (wireModalEnterSubmit below) treats the first non-close data-action
+  // element in the modal as "the" primary action, and this link sits in
+  // the modal body ahead of the real primary (Reset Passcode) button in
+  // DOM order — using an id + direct listener instead keeps Enter wired
+  // to Reset Passcode like every other modal.
+  var frResendBtn = $('admin-fr-resend-btn');
+  if(frResendBtn){
+    frResendBtn.addEventListener('click', function(){ handlers['admin-forgot-passcode-resend'](); });
+  }
   var peopleSortSelect = $('people-sort-select');
   if(peopleSortSelect){
     peopleSortSelect.addEventListener('change', function(){
@@ -2954,6 +3053,56 @@ var handlers = {
       render();
     });
   },
+  'admin-forgot-passcode-open': function(){
+    var preselect = ($('admin-login-name') || {}).value || STATE.admins[0];
+    ui.modal = 'adminForgotPasscode';
+    ui.modalData = { stage: 'request', name: preselect };
+    render();
+  },
+  'admin-forgot-passcode-send': function(){
+    var name = $('admin-fr-name') ? $('admin-fr-name').value : ui.modalData.name;
+    callApi('request-admin-recovery', { name: name }).then(function(){
+      ui.modalData = { stage: 'confirm', name: name };
+      toast('Code sent to ' + PRIMARY_RECOVERY_EMAIL, 'success');
+      render();
+    }).catch(function(err){
+      ui.modalData.frError = apiErrorMessage(err);
+      render();
+    });
+  },
+  'admin-forgot-passcode-resend': function(){
+    var name = ui.modalData.name;
+    callApi('request-admin-recovery', { name: name }).then(function(){
+      toast('New code sent to ' + PRIMARY_RECOVERY_EMAIL, 'success');
+      // Deliberately skip render() on success: the code/new-passcode fields
+      // aren't tracked in ui.modalData, so a full re-render would blank out
+      // whatever the admin already typed into the new-passcode fields. There's
+      // nothing else on screen that needs to change — only an error message
+      // (cleared below when there was one) would need a redraw.
+      if(ui.modalData.frError){ ui.modalData.frError = null; render(); }
+    }).catch(function(err){
+      ui.modalData.frError = apiErrorMessage(err);
+      render();
+    });
+  },
+  'admin-forgot-passcode-confirm': function(){
+    var name = ui.modalData.name;
+    var code = ($('admin-fr-code') || {}).value || '';
+    var n1 = ($('admin-fr-new-1') || {}).value || '';
+    var n2 = ($('admin-fr-new-2') || {}).value || '';
+    if(!/^\d{4,6}$/.test(code.trim())){ ui.modalData.frError = 'Enter the code from the email.'; render(); return; }
+    if(n1.length < 4){ ui.modalData.frError = 'New passcode must be at least 4 characters.'; render(); return; }
+    if(n1 !== n2){ ui.modalData.frError = 'New passcodes don’t match.'; render(); return; }
+    callApi('confirm-admin-recovery', { name: name, code: code.trim(), next: n1 }).then(function(){
+      ui.modal = null;
+      ui.modalData = { loginError: null, lastTriedName: name };
+      toast('Passcode reset — log in with your new passcode.', 'success');
+      render();
+    }).catch(function(err){
+      ui.modalData.frError = apiErrorMessage(err);
+      render();
+    });
+  },
   'admin-logout': function(){
     if(session.token) callApi('logout', { token: session.token }).catch(function(){});
     stopPolling();
@@ -3009,8 +3158,13 @@ var handlers = {
     if(!existing || !existing.timeIn){ toast('Clock in first.', 'error'); return; }
     if(existing.timeOut){ toast('You’re already clocked out today.', 'error'); return; }
     var stamp = nowTimeHHMM();
-    apiPersist('punch', { token: session.token, field: 'timeOut', monthKey: monthKey, day: day, stamp: stamp },
-      function(s){ setEntry(emp.id, monthKey, day, { timeOut: stamp }); },
+    var lunchMinutes = parseMinutesField('punch-lunch-minutes');
+    var personalMinutes = parseMinutesField('punch-personal-minutes');
+    apiPersist('punch', {
+        token: session.token, field: 'timeOut', monthKey: monthKey, day: day, stamp: stamp,
+        lunchMinutes: lunchMinutes, personalMinutes: personalMinutes,
+      },
+      function(s){ setEntry(emp.id, monthKey, day, { timeOut: stamp, lunchMinutes: lunchMinutes, personalMinutes: personalMinutes }); },
       { successMsg: 'Clocked out at ' + fmtTime12(stamp) });
   },
   'submit-concern': function(){
@@ -3202,11 +3356,15 @@ var handlers = {
     var timeIn = tr.querySelector('.entry-timein');
     var timeOut = tr.querySelector('.entry-timeout');
     var minLate = tr.querySelector('.entry-minlate');
+    var lunch = tr.querySelector('.entry-lunch');
+    var personal = tr.querySelector('.entry-personal');
     var notes = tr.querySelector('.entry-notes');
     if(status) status.value = '';
     if(timeIn) timeIn.value = '';
     if(timeOut) timeOut.value = '';
     if(minLate) minLate.value = '';
+    if(lunch) lunch.value = '';
+    if(personal) personal.value = '';
     if(notes) notes.value = '';
   },
   'admin-goto-entries': function(el){ ui.adminEmpId = el.dataset.id; ui.adminTab = 'entries'; render(); },
@@ -3238,7 +3396,14 @@ var handlers = {
         if(diff > 0){ status = 'L'; minutesLate = diff; }
       }
       var notes = tr.querySelector('.entry-notes').value || null;
-      patches[day] = { status: status, timeIn: timeIn, timeOut: timeOut, minutesLate: minutesLate, notes: notes };
+      var lunchVal = tr.querySelector('.entry-lunch').value;
+      var personalVal = tr.querySelector('.entry-personal').value;
+      var lunchMinutes = lunchVal !== '' ? Math.max(0, Math.min(480, parseInt(lunchVal, 10) || 0)) : null;
+      var personalMinutes = personalVal !== '' ? Math.max(0, Math.min(480, parseInt(personalVal, 10) || 0)) : null;
+      patches[day] = {
+        status: status, timeIn: timeIn, timeOut: timeOut, minutesLate: minutesLate, notes: notes,
+        lunchMinutes: lunchMinutes, personalMinutes: personalMinutes,
+      };
     });
     apiPersist('save-entries', { token: session.token, employeeId: empId, monthKey: monthKey, patches: patches },
       function(s){ Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); }); },
