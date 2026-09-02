@@ -597,6 +597,27 @@ function uid(prefix){ return prefix + '_' + Math.random().toString(36).slice(2,9
 function slugify(name){ return String(name).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,''); }
 function pad2(n){ return n < 10 ? '0'+n : ''+n; }
 
+/* Eye / eye-off icons used by the show/hide button on every password field.
+   Swapped in place by the 'toggle-password-visibility' handler below — that
+   handler deliberately does NOT call render(), since a full re-render would
+   rebuild the input from scratch (type reset back to "password", cursor
+   position and focus lost) on every keystroke's surrounding interaction. */
+var EYE_ICON_SVG = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+var EYE_OFF_ICON_SVG = '<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 20c-7 0-11-8-11-8a21.62 21.62 0 0 1 5.06-6.06M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 8 11 8a21.64 21.64 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
+/* A password <input> plus a show/hide toggle button, sized to sit inside
+   the same <label class="field"> wrapper a plain password input would use.
+   id/autocomplete/placeholder match the args every existing password input
+   already used, so this is a drop-in replacement. */
+function pwToggleField(id, autocomplete, placeholder){
+  var ph = placeholder ? ' placeholder="' + esc(placeholder) + '"' : '';
+  return '<span style="position:relative; display:block;">' +
+    '<input type="password" id="' + id + '" autocomplete="' + autocomplete + '"' + ph + ' style="width:100%; padding-right:38px; box-sizing:border-box;">' +
+    '<button type="button" data-action="toggle-password-visibility" data-target="' + id + '" aria-label="Show password" title="Show password" style="position:absolute; right:4px; top:50%; transform:translateY(-50%); background:none; border:none; padding:5px; margin:0; cursor:pointer; display:flex; align-items:center; color:var(--ink-soft); border-radius:6px;">' +
+      EYE_ICON_SVG +
+    '</button>' +
+  '</span>';
+}
+
 var MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 /* Contact address shown to a deactivated employee who tries to log in, and
    to admins in the People & Access help text. Kenneth asked for this exact
@@ -1700,10 +1721,10 @@ function viewEmployeeSetup(emp){
         '<p class="muted" style="margin:0; font-size:13px;">You’re claiming the profile for <strong>' + esc(formatName(emp.name)) + '</strong>. Choose a passcode — you’ll use it next time to keep your timesheet private to you and admins.</p>' +
       '</div>' +
       '<label class="field">Choose a passcode (4+ characters)' +
-        '<input type="password" id="setup-passcode-1" autocomplete="new-password">' +
+        pwToggleField('setup-passcode-1', 'new-password') +
       '</label>' +
       '<label class="field">Confirm passcode' +
-        '<input type="password" id="setup-passcode-2" autocomplete="new-password">' +
+        pwToggleField('setup-passcode-2', 'new-password') +
       '</label>' +
       err +
       '<div class="row" style="justify-content:space-between;">' +
@@ -1728,7 +1749,7 @@ function viewEmployeeAuth(emp){
         '<p class="muted" style="margin:0; font-size:13px;">Enter your passcode to view your timesheet.</p>' +
       '</div>' +
       '<label class="field">Passcode' +
-        '<input type="password" id="auth-passcode" autocomplete="current-password">' +
+        pwToggleField('auth-passcode', 'current-password') +
       '</label>' +
       err +
       '<div class="row" style="justify-content:space-between;">' +
@@ -1744,8 +1765,14 @@ function viewEmployeeAuth(emp){
    VIEW: ADMIN LOGIN
    ============================================================ */
 function viewAdminLogin(){
-  var lastTried = ui.modalData.lastTriedName || STATE.admins[0];
-  var options = STATE.admins.map(function(a){
+  // Deliberately does NOT default to STATE.admins[0]: the login page must
+  // not reveal any admin's name until someone actively opens the dropdown
+  // and picks their own. lastTriedName only gets set after a real login
+  // attempt (see 'admin-login-submit' below), so a fresh visit to this page
+  // always starts on the blank placeholder option.
+  var lastTried = ui.modalData.lastTriedName || '';
+  var placeholder = '<option value="" disabled' + (lastTried ? '' : ' selected') + '>Select your name…</option>';
+  var options = placeholder + STATE.admins.map(function(a){
     var sel = a === lastTried ? ' selected' : '';
     return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>';
   }).join('');
@@ -1762,7 +1789,7 @@ function viewAdminLogin(){
         '<select id="admin-login-name">' + options + '</select>' +
       '</label>' +
       '<label class="field">Password' +
-        '<input type="password" id="admin-login-pass" placeholder="••••••" autocomplete="current-password">' +
+        pwToggleField('admin-login-pass', 'current-password', '••••••') +
       '</label>' +
       err +
       '<button type="button" class="link-btn" style="align-self:flex-start; font-size:12.5px;" data-action="admin-forgot-passcode-open">Forgot your passcode?</button>' +
@@ -1874,11 +1901,6 @@ function viewEmployeeDash(emp){
   }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
   var myRequestsList = myRequests.length ? myRequests.map(myRequestRowHTML).join('') : '<p class="empty">No requests sent yet.</p>';
 
-  var myAnnouncements = (STATE.myNotifications || []).filter(function(n){
-    return n.type === 'announcement' || n.type === 'reminder';
-  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
-  var announcementsList = myAnnouncements.length ? myAnnouncements.map(announcementRowHTML).join('') : '<p class="empty">Nothing from ' + esc(STATE.primaryAdmin || 'the office') + ' yet.</p>';
-
   return '' +
   '<div class="stack" style="gap:24px;">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
@@ -1890,7 +1912,8 @@ function viewEmployeeDash(emp){
           '<p class="muted" style="margin:2px 0 0;">' + esc(emp.shiftLabel || '') + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
         '</div>' +
       '</div>' +
-      '<div class="row" style="flex-wrap:wrap;">' +
+      '<div class="row" style="flex-wrap:wrap; align-items:center;">' +
+        notificationsBellHTML() +
         '<button class="btn btn-sm" data-action="download-my-timesheet">Download Timesheet</button>' +
         '<button class="btn btn-sm" data-action="download-my-attendance">Download Attendance</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="notify-admin-open">Notify Admin</button>' +
@@ -1933,23 +1956,44 @@ function viewEmployeeDash(emp){
       '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Late, absence, sick leave and vacation leave requests you\'ve sent to ' + esc(STATE.primaryAdmin) + '. Vacation leave needs Management approval; the rest are just for their records.</p>' +
       myRequestsList +
     '</div>' +
-
-    '<div class="card card-pad stack">' +
-      '<h2 style="font-size:18px;">Announcements</h2>' +
-      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Updates and reminders sent out by the office.</p>' +
-      announcementsList +
-    '</div>' +
   '</div>';
 }
 function announcementRowHTML(n){
   var isReminder = n.type === 'reminder';
-  return '<div class="card-pad" style="border:1px solid var(--line); border-radius:10px; padding:12px 14px;">' +
+  var unread = !n.read;
+  return '<div class="card-pad" style="border:1px solid ' + (unread ? NOTIF_GOLD : 'var(--line)') + '; border-radius:10px; padding:12px 14px; background:' + (unread ? 'rgba(201,150,43,0.07)' : 'transparent') + ';">' +
     '<div class="row" style="gap:8px; align-items:center;">' +
+      (unread ? '<span title="Unread" style="width:7px; height:7px; border-radius:50%; background:' + NOTIF_GOLD + '; flex:none;"></span>' : '') +
       '<span class="pill ' + (isReminder ? 'pill-warn' : 'pill-accent') + '">' + (isReminder ? 'Reminder' : 'Update') + '</span>' +
       '<span class="muted" style="font-size:11px;">' + esc(fmtNotifWhen(n.createdAt)) + '</span>' +
     '</div>' +
     '<div style="font-size:13.5px; margin-top:6px;">' + esc(n.message || '') + '</div>' +
   '</div>';
+}
+
+/* Employee dashboard notification bell — shows every announcement/reminder
+   sent to this employee. Deliberately placed in the header (top of the
+   page, next to the other account actions) rather than buried at the
+   bottom of the dashboard the way the old "Announcements" card was, so an
+   important update is actually noticed. Gold + a count badge while
+   anything is unread, plain grey once everything's been marked read. */
+var NOTIF_GOLD = '#C9962B';
+function myAnnouncementItems(){
+  return (STATE.myNotifications || []).filter(function(n){
+    return n.type === 'announcement' || n.type === 'reminder';
+  }).sort(function(a,b){ return (b.createdAt||'').localeCompare(a.createdAt||''); });
+}
+function notificationsBellHTML(){
+  var items = myAnnouncementItems();
+  var unreadCount = items.filter(function(n){ return !n.read; }).length;
+  var color = unreadCount > 0 ? NOTIF_GOLD : 'var(--ink-soft)';
+  var badge = unreadCount > 0
+    ? '<span style="position:absolute; top:-3px; right:-4px; background:' + NOTIF_GOLD + '; color:#241B04; font-size:10px; font-weight:700; min-width:16px; height:16px; border-radius:8px; display:flex; align-items:center; justify-content:center; padding:0 4px; line-height:1; border:2px solid var(--bg);">' + (unreadCount > 99 ? '99+' : unreadCount) + '</span>'
+    : '';
+  return '<button type="button" class="btn btn-sm btn-ghost" data-action="notifications-bell-open" title="Announcements" aria-label="Announcements' + (unreadCount ? ', ' + unreadCount + ' unread' : ', none unread') + '" style="position:relative; padding:8px 11px;">' +
+    '<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="' + color + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>' +
+    badge +
+  '</button>';
 }
 
 function statusPillHTML(status, minutesLate){
@@ -2549,9 +2593,9 @@ function renderModalInto(app){
     var pcErr = ui.modalData.pcError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.pcError) + '</p>' : '';
     html = modalShell('Change my passcode',
       '<div class="stack" style="gap:12px;">' +
-        '<label class="field">Current passcode<input type="password" id="pc-current" autocomplete="current-password"></label>' +
-        '<label class="field">New passcode (4+ characters)<input type="password" id="pc-new-1" autocomplete="new-password"></label>' +
-        '<label class="field">Confirm new passcode<input type="password" id="pc-new-2" autocomplete="new-password"></label>' +
+        '<label class="field">Current passcode' + pwToggleField('pc-current', 'current-password') + '</label>' +
+        '<label class="field">New passcode (4+ characters)' + pwToggleField('pc-new-1', 'new-password') + '</label>' +
+        '<label class="field">Confirm new passcode' + pwToggleField('pc-new-2', 'new-password') + '</label>' +
         pcErr +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
@@ -2677,9 +2721,9 @@ function renderModalInto(app){
     html = modalShell('Change my passcode',
       '<div class="stack" style="gap:12px;">' +
         '<p class="muted" style="margin:0; font-size:12.5px;">Current is whatever you\'ve been signing in with — your own passcode if you\'ve set one, otherwise the shared admin password.</p>' +
-        '<label class="field">Current<input type="password" id="admin-pc-current" autocomplete="current-password"></label>' +
-        '<label class="field">New passcode (4+ characters)<input type="password" id="admin-pc-new-1" autocomplete="new-password"></label>' +
-        '<label class="field">Confirm new passcode<input type="password" id="admin-pc-new-2" autocomplete="new-password"></label>' +
+        '<label class="field">Current' + pwToggleField('admin-pc-current', 'current-password') + '</label>' +
+        '<label class="field">New passcode (4+ characters)' + pwToggleField('admin-pc-new-1', 'new-password') + '</label>' +
+        '<label class="field">Confirm new passcode' + pwToggleField('admin-pc-new-2', 'new-password') + '</label>' +
         apcErr +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
@@ -2698,8 +2742,8 @@ function renderModalInto(app){
         '<div class="stack" style="gap:12px;">' +
           '<p class="muted" style="margin:0; font-size:12.5px;">A 6-digit code was emailed to ' + esc(PRIMARY_RECOVERY_EMAIL) + '. It expires in 15 minutes.</p>' +
           '<label class="field">Code<input type="text" inputmode="numeric" maxlength="6" id="admin-fr-code" placeholder="123456"></label>' +
-          '<label class="field">New passcode (4+ characters)<input type="password" id="admin-fr-new-1" autocomplete="new-password"></label>' +
-          '<label class="field">Confirm new passcode<input type="password" id="admin-fr-new-2" autocomplete="new-password"></label>' +
+          '<label class="field">New passcode (4+ characters)' + pwToggleField('admin-fr-new-1', 'new-password') + '</label>' +
+          '<label class="field">Confirm new passcode' + pwToggleField('admin-fr-new-2', 'new-password') + '</label>' +
           frErr +
           '<button type="button" class="link-btn" style="font-size:12.5px;" id="admin-fr-resend-btn">Didn’t get it? Send another code</button>' +
         '</div>',
@@ -2711,7 +2755,10 @@ function renderModalInto(app){
         '<div class="stack" style="gap:12px;">' +
           '<p class="muted" style="margin:0; font-size:12.5px;">This only works for the primary admin — everyone else should ask ' + esc(STATE.primaryAdmin || 'the primary admin') + ' to reset their passcode from People &amp; Access. We’ll email a one-time code to ' + esc(PRIMARY_RECOVERY_EMAIL) + '.</p>' +
           '<label class="field">Admin name' +
-            '<select id="admin-fr-name">' + (STATE.admins || []).map(function(a){ var sel = a === ui.modalData.name ? ' selected' : ''; return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>'; }).join('') + '</select>' +
+            '<select id="admin-fr-name">' +
+              '<option value="" disabled' + (ui.modalData.name ? '' : ' selected') + '>Select your name…</option>' +
+              (STATE.admins || []).map(function(a){ var sel = a === ui.modalData.name ? ' selected' : ''; return '<option value="' + esc(a) + '"' + sel + '>' + esc(a) + '</option>'; }).join('') +
+            '</select>' +
           '</label>' +
           frErr +
         '</div>',
@@ -2719,6 +2766,17 @@ function renderModalInto(app){
         '<button class="btn btn-primary" data-action="admin-forgot-passcode-send">Send Code</button>'
       );
     }
+  } else if(ui.modal === 'notificationsBell'){
+    var bellItems = myAnnouncementItems();
+    var bellUnread = bellItems.filter(function(n){ return !n.read; }).length;
+    var bellList = bellItems.length
+      ? '<div class="stack" style="gap:10px;">' + bellItems.map(announcementRowHTML).join('') + '</div>'
+      : '<p class="empty">Nothing from ' + esc(STATE.primaryAdmin || 'the office') + ' yet.</p>';
+    html = modalShell('Announcements',
+      bellList,
+      '<button class="btn btn-ghost" data-action="close-modal">Close</button>' +
+      (bellUnread ? '<button class="btn btn-primary" data-action="mark-my-notifications-read">Mark all as read (' + bellUnread + ')</button>' : '')
+    );
   } else if(ui.modal === 'confirmRemovePhoto'){
     html = modalShell('Remove photo',
       '<p style="margin:0; font-size:14px;">Remove <strong>' + esc(ui.modalData.name || '') + '</strong>’s profile photo? They can add a new one anytime.</p>',
@@ -3038,6 +3096,11 @@ var handlers = {
   'admin-login-submit': function(){
     var name = $('admin-login-name') ? $('admin-login-name').value : '';
     var pass = $('admin-login-pass') ? $('admin-login-pass').value : '';
+    if(!name){
+      ui.modalData.loginError = 'Select your name from the dropdown first.';
+      render();
+      return;
+    }
     ui.modalData.lastTriedName = name;
     callApi('admin-login', { name: name, password: pass }).then(function(data){
       session = { role: 'admin', employeeId: null, adminName: name, token: data.token };
@@ -3054,13 +3117,21 @@ var handlers = {
     });
   },
   'admin-forgot-passcode-open': function(){
-    var preselect = ($('admin-login-name') || {}).value || STATE.admins[0];
+    // No fallback to STATE.admins[0] here either — same reasoning as the
+    // login page's own dropdown: don't pre-reveal a name, only carry
+    // forward one the admin already picked on the select behind this link.
+    var preselect = ($('admin-login-name') || {}).value || '';
     ui.modal = 'adminForgotPasscode';
     ui.modalData = { stage: 'request', name: preselect };
     render();
   },
   'admin-forgot-passcode-send': function(){
     var name = $('admin-fr-name') ? $('admin-fr-name').value : ui.modalData.name;
+    if(!name){
+      ui.modalData.frError = 'Select your name from the dropdown first.';
+      render();
+      return;
+    }
     callApi('request-admin-recovery', { name: name }).then(function(){
       ui.modalData = { stage: 'confirm', name: name };
       toast('Code sent to ' + PRIMARY_RECOVERY_EMAIL, 'success');
@@ -3182,6 +3253,31 @@ var handlers = {
         });
       },
       { successMsg: 'Concern submitted' });
+  },
+  'notifications-bell-open': function(){ ui.modal = 'notificationsBell'; ui.modalData = {}; render(); },
+  // Deliberately DOM-only — no render() call. Every password field on the
+  // site (login, passcode setup, change-passcode, recovery) uses this same
+  // handler via pwToggleField(); a full render() would rebuild the input
+  // from its template string, snapping type back to "password" and
+  // dropping focus/cursor position out from under anyone mid-keystroke.
+  'toggle-password-visibility': function(el){
+    var id = el.getAttribute('data-target');
+    var input = $(id);
+    if(!input) return;
+    var nowShowing = input.type === 'password';
+    input.type = nowShowing ? 'text' : 'password';
+    el.innerHTML = nowShowing ? EYE_OFF_ICON_SVG : EYE_ICON_SVG;
+    el.setAttribute('aria-label', nowShowing ? 'Hide password' : 'Show password');
+    el.setAttribute('title', nowShowing ? 'Hide password' : 'Show password');
+  },
+  'mark-my-notifications-read': function(){
+    apiPersist('mark-my-notifications-read', { token: session.token },
+      function(s){
+        (s.myNotifications || []).forEach(function(n){
+          if(n.type === 'announcement' || n.type === 'reminder') n.read = true;
+        });
+      },
+      { successMsg: 'Marked as read' });
   },
   'notify-admin-open': function(){ ui.modal = 'notifyAdmin'; ui.modalData = {}; render(); },
   'notify-admin-submit': function(){
