@@ -1343,11 +1343,19 @@ function employeeTimesheetExcelHTML(emp, monthKey){
     var rowBg = weekend ? 'background:#F7F8F9;' : '';
     var valStyle = XL_CELL + rowBg + 'color:'+XL.accent+';text-align:center;';
     var plainStyle = XL_CELL + rowBg + 'text-align:center;';
+    // A day explicitly marked Absent has no Time In/Out to show, and used
+    // to just render as two blank cells — indistinguishable from a day
+    // that was never filled in at all. Show it plainly instead (Ken's
+    // report: "it only displays as blank"), same red used for 'A' on the
+    // Attendance exports, spanning both time columns.
+    var isAbsent = entry.status === 'A';
+    var timeCells = isAbsent
+      ? xlTd('ABSENT', XL_CELL + 'text-align:center;font-weight:700;color:'+XL.bad+';background:'+XL.badSoft+';', 2)
+      : xlTd(entry.timeIn?fmtTime12(entry.timeIn):'', valStyle) + xlTd(entry.timeOut?fmtTime12(entry.timeOut):'', valStyle);
     html += '<tr>' +
       xlTd(fmtDateShort(monthKey,d)+', '+mi.year, plainStyle) +
       xlTd(weekdayShort(monthKey,d), plainStyle) +
-      xlTd(entry.timeIn?fmtTime12(entry.timeIn):'', valStyle) +
-      xlTd(entry.timeOut?fmtTime12(entry.timeOut):'', valStyle) +
+      timeCells +
       xlTd(entry.lunchMinutes?entry.lunchMinutes:'', valStyle) +
       xlTd(entry.personalMinutes?entry.personalMinutes:'', valStyle) +
       xlTd(h.total===null?'':h.total, valStyle) +
