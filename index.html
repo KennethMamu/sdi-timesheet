@@ -1,4 +1,5 @@
 
+
 <meta charset="utf-8">
 <title>SDI Timesheet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -610,7 +611,7 @@ function userIsEditing(){
    response could be carrying data from before that write and would
    silently roll it back the moment it landed. */
 function shouldSkipPoll(){
-  return userIsEditing() || pendingWriteCount > 0;
+  return userIsEditing() || pendingWriteCount > 0 || entryAutosavePendingCount() > 0;
 }
 function safeRender(){
   if(userIsEditing()) return;
@@ -866,6 +867,9 @@ var API_ERROR_MESSAGES = {
   invalid_photo: 'That doesn’t look like a valid image.',
   photo_too_large: 'That image is too large — try a smaller photo.',
   empty_message: 'Write a message first.',
+  shift_in_use: 'Pick a shift to move this shift’s employees to first.',
+  last_shift: 'You can’t remove the only shift — add another one first.',
+  unknown_shift: 'That shift no longer exists — the page will refresh with the latest list.',
   recovery_admin_only: 'Passcode recovery by email is only set up for the primary admin.',
   too_soon: 'A code was already sent recently — check your email, or wait a bit before requesting another.',
   email_send_failed: 'Couldn’t send the recovery email — try again shortly, or ask to have your passcode reset directly.',
@@ -897,7 +901,10 @@ function apiPersist(action, payload, mutateFn, opts){
       return Promise.resolve(false);
     }
   }
-  render(); // optimistic UI
+  // noRender: the Edit Entries autosave already has the edited value on
+  // screen in the input itself — redrawing here would yank focus out of
+  // whatever field the admin has moved on to typing in.
+  if(!opts.noRender) render(); // optimistic UI
 
   // See pendingWriteCount's own comment above: kept above zero for the
   // full round trip of this write so a background poll that started
@@ -907,11 +914,12 @@ function apiPersist(action, payload, mutateFn, opts){
   return callApi(action, payload).then(function(data){
     pendingWriteCount--;
     if(opts.onSuccess) opts.onSuccess(data);
-    toast(opts.successMsg || 'Saved', 'success');
+    if(!opts.quiet) toast(opts.successMsg || 'Saved', 'success');
     return true;
   }).catch(function(err){
     pendingWriteCount--;
     STATE = snapshot;
+    if(opts.onError) opts.onError(err);
     render();
     if(err && err.code === 'invalid_session'){
       session = { role: null, employeeId: null, adminName: null, token: null };
@@ -924,6 +932,134 @@ function apiPersist(action, payload, mutateFn, opts){
     return false;
   });
 }
+
+/* ============================================================
+   EDIT ENTRIES — AUTOSAVE (v42)
+   Every change to a day's row is saved on its own, a moment after the
+   admin stops typing in it, instead of waiting for a Save Changes
+   click. Only that one day is sent (the old Save Changes sent all
+   28–31 days every time, which also filled the database with empty
+   placeholder rows for untouched days).
+   ============================================================ */
+var ENTRY_AUTOSAVE_DELAY_MS = 900;
+var entryAutosaveTimers = {};   // key "emp|month|day" -> { timer, tr, empId, monthKey, day }
+var entrySaveInFlight = 0;
+var entrySaveLastError = null;
+var entrySaveEverSaved = false;
+function entryAutosavePendingCount(){ return Object.keys(entryAutosaveTimers).length; }
+function entriesSaveStatusText(){
+  if(entryAutosavePendingCount() || entrySaveInFlight) return 'Saving…';
+  if(entrySaveLastError) return '<span style="color:var(--bad);">Couldn’t save the last change — ' + esc(entrySaveLastError) + '</span>';
+  if(entrySaveEverSaved) return '<span style="color:var(--good, #1a7f37);">&#10003; All changes saved</span>';
+  return 'Changes save automatically';
+}
+function refreshEntriesSaveStatus(){
+  var el = $('entries-save-status');
+  if(el) el.innerHTML = entriesSaveStatusText();
+}
+/* Works out what a row should be saved as. `changed` is which field the
+   admin just touched — lateness is only recalculated when the Time In
+   itself (or the status, to Late with no minutes) changed, so a status
+   the admin picks by hand (e.g. Present, to excuse a late arrival) is
+   never silently flipped back to Late. Writes any recalculated status /
+   Min Late straight back into the row so the screen matches what's saved. */
+function readEntryRow(tr, changed, requiredTimeIn){
+  var statusEl = tr.querySelector('.entry-status');
+  var timeInEl = tr.querySelector('.entry-timein');
+  var minLateEl = tr.querySelector('.entry-minlate');
+  var status = statusEl.value || '';
+  var timeIn = timeInEl.value || '';
+  var minLateVal = minLateEl.value;
+  var diff = (timeIn && requiredTimeIn) ? (toMinutesOfDay(timeIn) - toMinutesOfDay(requiredTimeIn)) : null;
+
+  if(changed === 'timein' && status !== 'A' && status !== 'OFF'){
+    if(!timeIn){
+      if(status === 'L'){ status = ''; minLateVal = ''; }
+    } else if(diff !== null && diff > 0){
+      status = 'L'; minLateVal = String(diff);
+    } else if(status === 'L' || status === ''){
+      status = 'P'; minLateVal = '';
+    }
+  } else if(changed === 'status'){
+    if(status === 'L' && minLateVal === '' && diff !== null && diff > 0) minLateVal = String(diff);
+    if(status !== 'L') minLateVal = '';
+  }
+  statusEl.value = status;
+  minLateEl.value = minLateVal;
+
+  var lunchVal = tr.querySelector('.entry-lunch').value;
+  var personalVal = tr.querySelector('.entry-personal').value;
+  return {
+    status: status || null,
+    timeIn: timeIn || null,
+    timeOut: tr.querySelector('.entry-timeout').value || null,
+    minutesLate: (status === 'L' && minLateVal !== '' && !isNaN(parseInt(minLateVal, 10))) ? Math.max(0, parseInt(minLateVal, 10)) : null,
+    notes: (tr.querySelector('.entry-notes').value || '').trim() || null,
+    lunchMinutes: lunchVal !== '' ? Math.max(0, Math.min(480, parseInt(lunchVal, 10) || 0)) : null,
+    personalMinutes: personalVal !== '' ? Math.max(0, Math.min(480, parseInt(personalVal, 10) || 0)) : null,
+  };
+}
+function entryFieldKind(el){
+  if(!el || !el.classList) return null;
+  if(el.classList.contains('entry-status')) return 'status';
+  if(el.classList.contains('entry-timein')) return 'timein';
+  if(el.classList.contains('entry-timeout')) return 'timeout';
+  if(el.classList.contains('entry-minlate')) return 'minlate';
+  if(el.classList.contains('entry-lunch')) return 'lunch';
+  if(el.classList.contains('entry-personal')) return 'personal';
+  if(el.classList.contains('entry-notes')) return 'notes';
+  return null;
+}
+function scheduleEntryRowSave(tr, changed, immediate){
+  var table = tr && tr.closest('#entries-editor-table');
+  if(!table) return;
+  var empId = table.getAttribute('data-emp');
+  var monthKey = table.getAttribute('data-month');
+  var day = tr.getAttribute('data-day');
+  if(!empId || !monthKey || !day) return;
+  // Lateness is recalculated right away (not after the delay) so the
+  // Status/Min Late cells update the moment the time is entered.
+  var emp = getEmployee(empId);
+  if(changed === 'timein' || changed === 'status') readEntryRow(tr, changed, emp ? shiftRequiredTimeIn(emp.shift) : null);
+  var key = empId + '|' + monthKey + '|' + day;
+  var existing = entryAutosaveTimers[key];
+  if(existing) clearTimeout(existing.timer);
+  var job = { tr: tr, empId: empId, monthKey: monthKey, day: day };
+  job.timer = setTimeout(function(){ runEntryAutosave(key); }, immediate ? 0 : ENTRY_AUTOSAVE_DELAY_MS);
+  entryAutosaveTimers[key] = job;
+  refreshEntriesSaveStatus();
+}
+function runEntryAutosave(key){
+  var job = entryAutosaveTimers[key];
+  if(!job) return;
+  clearTimeout(job.timer);
+  delete entryAutosaveTimers[key];
+  var patch = readEntryRow(job.tr, null, null);
+  var cur = getEntry(job.empId, job.monthKey, job.day) || {};
+  var same = ['status','timeIn','timeOut','minutesLate','notes','lunchMinutes','personalMinutes'].every(function(k){
+    var a = cur[k], b = patch[k];
+    return (a === undefined || a === null || a === '' ? null : a) === (b === undefined || b === '' ? null : b);
+  });
+  if(same){ refreshEntriesSaveStatus(); return; }
+  var patches = {}; patches[job.day] = patch;
+  entrySaveInFlight++;
+  entrySaveLastError = null;
+  refreshEntriesSaveStatus();
+  apiPersist('save-entries', { token: session.token, employeeId: job.empId, monthKey: job.monthKey, patches: patches, clientLateness: true },
+    function(){ setEntry(job.empId, job.monthKey, job.day, patch); },
+    {
+      noRender: true, quiet: true,
+      onSuccess: function(){ entrySaveInFlight--; entrySaveEverSaved = true; refreshEntriesSaveStatus(); },
+      onError: function(err){ entrySaveInFlight--; entrySaveLastError = apiErrorMessage(err); }
+    }).then(function(){ refreshEntriesSaveStatus(); });
+}
+function flushEntryAutosaves(){
+  Object.keys(entryAutosaveTimers).forEach(runEntryAutosave);
+}
+window.addEventListener('beforeunload', function(e){
+  flushEntryAutosaves();
+  if(entrySaveInFlight > 0){ e.preventDefault(); e.returnValue = ''; }
+});
 
 /* ============================================================
    CSV / DOWNLOADS
@@ -1159,7 +1295,7 @@ function downloadViaBlob(baseName, content, ext){
    server, both to keep the row small and so a giant phone photo doesn't
    need to round-trip at full size first.
    ============================================================ */
-var PHOTO_MAX_DIM = 240; // px, longest side after resize
+var PHOTO_MAX_DIM = 360; // px, longest side after resize (was 240 — raised in v42 so the photo viewer shows a usable size, while staying small enough for the 7s poll)
 var PHOTO_MAX_DATA_URL_LEN = 350000; // server's cap is 400000 — leaves headroom
 function resizeImageFile(file, callback){
   if(!file){ callback(null, null); return; }
@@ -1194,7 +1330,8 @@ function avatarHTML(photoDataUrl, name, size){
   size = size || 40;
   var common = 'width:' + size + 'px; height:' + size + 'px; border-radius:50%; flex:none;';
   if(photoDataUrl){
-    return '<img src="' + esc(photoDataUrl) + '" alt="" style="' + common + ' object-fit:cover; border:1px solid var(--line);">';
+    // Click (or Enter) opens the full photo in a viewer — see 'view-photo'.
+    return '<img src="' + esc(photoDataUrl) + '" alt="' + esc(name ? 'Photo of ' + name : 'Profile photo') + '" title="View photo" role="button" tabindex="0" data-action="view-photo" data-name="' + esc(name || '') + '" style="' + common + ' object-fit:cover; border:1px solid var(--line); cursor:zoom-in;">';
   }
   var initials = String(name || '?').trim().split(/\s+/).map(function(w){ return w.charAt(0); }).filter(Boolean).slice(0,2).join('').toUpperCase() || '?';
   var fontSize = Math.max(11, Math.round(size * 0.4));
@@ -1714,7 +1851,7 @@ function adminEmpSearchHTML(selectedEmp){
       '<div id="admin-emp-results" class="autocomplete-results" hidden></div>' +
     '</label>' +
     (selectedEmp ?
-      '<span id="admin-emp-selected-name" class="pill pill-good" style="margin-bottom:9px; display:inline-flex; align-items:center; gap:6px;">Editing: ' + esc(formatName(selectedEmp.name)) +
+      '<span id="admin-emp-selected-name" class="pill pill-good" style="margin-bottom:9px; display:inline-flex; align-items:center; gap:6px;">' + (selectedEmp.photoDataUrl ? avatarHTML(selectedEmp.photoDataUrl, selectedEmp.name, 20) : '') + 'Editing: ' + esc(formatName(selectedEmp.name)) +
         '<button type="button" data-action="admin-clear-emp-selection" title="Clear selection" aria-label="Clear selection" style="background:none; border:none; cursor:pointer; color:inherit; font-weight:700; font-size:15px; line-height:1; padding:0;">&times;</button>' +
       '</span>'
       : '') +
@@ -1775,6 +1912,11 @@ function renderLoadingHTML(){
 function render(){
   var app = $('app');
   if(!app) return;
+  // Anything typed in Edit Entries that's still waiting out its short
+  // autosave delay gets sent now, read straight from the DOM, before
+  // the table is redrawn (month change, picking another employee, a
+  // tab switch...) — otherwise that last edit would be lost.
+  flushEntryAutosaves();
   if(!DATA_READY){
     app.innerHTML = renderLoadingHTML();
     return;
@@ -2385,6 +2527,9 @@ function viewAdminDash(){
 function adminOverviewTab(){
   var monthKey = adminMonth();
   var shiftFilter = ui.overviewShift || 'all';
+  // A shift that's since been removed (Shift Settings → Remove) would
+  // otherwise leave this filter stuck on an empty list with no button lit.
+  if(shiftFilter !== 'all' && !(STATE.shifts && STATE.shifts[shiftFilter])){ shiftFilter = 'all'; ui.overviewShift = 'all'; }
   var shownEmps = sortedActiveEmployees().filter(function(e){ return shiftFilter === 'all' || e.shift === shiftFilter; });
 
   // Built from live shift data (not a hardcoded AM/PM/EVE list) so a
@@ -2500,11 +2645,11 @@ function adminEntriesTab(){
   return '<div class="stack">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
       adminEmpSearchHTML(emp) +
-      '<button class="btn btn-primary" data-action="save-entries">Save Changes</button>' +
+      '<span id="entries-save-status" class="muted" aria-live="polite" style="font-size:12.5px; margin-bottom:9px;">' + entriesSaveStatusText() + '</span>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Set status, time in/out, lunch/personal minutes and notes for each day, then Save Changes. Total, Reg and OT hours are calculated automatically — lunch and personal minutes are subtracted from that day\'s hours, same as when an employee enters them themselves before clocking out. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand. Type your own number into Min Late alongside picking Late yourself only if you want to override that calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">Changes save automatically as you edit each day — no Save button needed (watch the status at the top right). Total, Reg and OT hours are calculated automatically — lunch and personal minutes are subtracted from that day\'s hours, same as when an employee enters them themselves before clocking out. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand, and correcting the time to an on-time one switches it back to Present. To excuse a late arrival, just set Status to Present. Type your own number into Min Late only if you want to override the calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
     '<div class="table-wrap">' +
-      '<table id="entries-editor-table">' +
+      '<table id="entries-editor-table" data-emp="' + esc(emp.id) + '" data-month="' + esc(monthKey) + '">' +
         '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Lunch</th><th>Personal</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
@@ -2714,14 +2859,14 @@ function adminPeopleTab(){
     // look one up — Reset is the only recovery path when someone forgets.
     var passcodeCell = e.passcodeSet ? '<span class="muted">Set</span>' : '<span class="muted">Not set</span>';
     return '<tr>' +
-      '<td><div class="row" style="gap:8px; align-items:center;">' + avatarHTML(e.photoDataUrl, e.name, 26) + '<span>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</span></div></td>' +
+      '<td><div class="row" style="gap:8px; align-items:center; flex-wrap:nowrap;">' + avatarHTML(e.photoDataUrl, e.name, 26) + '<span>' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</span></div></td>' +
       '<td class="muted">' + esc(e.email || '—') + '</td>' +
       '<td>' + esc(e.department||'') + '</td>' +
       '<td>' + esc(e.position||'') + '</td>' +
       '<td><span class="badge-shift">' + esc(shiftName(e.shift)) + '</span></td>' +
       '<td>' + passcodeCell + '</td>' +
       '<td>' + (e.passcodeSet ? '<button class="btn btn-sm" data-action="reset-employee-passcode" data-id="' + esc(e.id) + '">Reset</button>' : '<span class="muted">—</span>') + '</td>' +
-      '<td>' + (e.photoDataUrl ? '<button class="btn btn-sm" data-action="remove-employee-photo" data-id="' + esc(e.id) + '">Remove Photo</button>' : '<span class="muted">—</span>') + '</td>' +
+      '<td>' + (e.photoDataUrl ? '<div class="row" style="gap:6px; flex-wrap:nowrap;"><button class="btn btn-sm" data-action="view-employee-photo" data-id="' + esc(e.id) + '">View Photo</button><button class="btn btn-sm" data-action="remove-employee-photo" data-id="' + esc(e.id) + '">Remove Photo</button></div>' : '<span class="muted">—</span>') + '</td>' +
       '<td><button class="btn btn-sm" data-action="edit-employee-open" data-id="' + esc(e.id) + '">Edit</button></td>' +
       '<td>' + (e.active
           ? '<button class="btn btn-sm btn-danger" data-action="toggle-employee-active" data-id="' + esc(e.id) + '">Deactivate</button>'
@@ -2758,7 +2903,7 @@ function adminPeopleTab(){
     // the primary manages a fellow admin's.
     var canManage = isMePrimary && !isPrimary;
     return '<tr>' +
-      '<td><div class="row" style="gap:8px; align-items:center;">' + avatarHTML(photo, a, 26) + '<span>' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</span></div></td>' +
+      '<td><div class="row" style="gap:8px; align-items:center; flex-wrap:nowrap;">' + avatarHTML(photo, a, 26) + '<span>' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</span></div></td>' +
       '<td class="muted">' + esc(email || '—') + '</td>' +
       '<td class="muted">' + (hasOwnPasscode ? 'Personal' : 'Shared') + '</td>' +
       '<td>' + (canManage
@@ -2812,12 +2957,15 @@ function adminPeopleTab(){
             '<td class="muted">' + esc(shiftScheduleLabel(code)) + '</td>' +
             '<td class="muted">' + esc(shiftWorkDaysLabel(code)) + '</td>' +
             '<td class="mono">' + esc(shiftRequiredTimeIn(code) ? fmtTime12(shiftRequiredTimeIn(code)) : '—') + '</td>' +
-            '<td><button class="btn btn-sm" data-action="edit-shift-open" data-code="' + code + '">Edit</button></td>' +
+            '<td><div class="row" style="gap:6px; flex-wrap:nowrap;">' +
+              '<button class="btn btn-sm" data-action="edit-shift-open" data-code="' + esc(code) + '">Edit</button>' +
+              '<button class="btn btn-sm btn-danger" data-action="delete-shift-open" data-code="' + esc(code) + '">Remove</button>' +
+            '</div></td>' +
           '</tr>';
         }).join('') +
         '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Edit a shift to rename it, change its schedule, or change which days it runs — updates everywhere it\'s shown. Add Shift creates a brand-new shift employees can be assigned to.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Edit a shift to rename it, change its schedule, or change which days it runs — updates everywhere it\'s shown. Add Shift creates a brand-new shift employees can be assigned to. Remove deletes a shift entirely — anyone still on it is moved to another shift you pick first, and their past entries are kept.</p></div>' +
     '</div>' +
   '</div>';
 }
@@ -2930,7 +3078,7 @@ function renderModalInto(app){
     var pendState = ui.modalData.pendingState || {};
     var pendCount = Array.isArray(pendState.employees) ? pendState.employees.length : 0;
     html = modalShell('Restore from backup?',
-      '<p style="margin:0; font-size:14px;">This backup file has <strong>' + pendCount + ' employee' + (pendCount === 1 ? '' : 's') + '</strong>. Restoring will replace <strong>all</strong> current data — for every admin and employee — with what’s in this file. Anything entered since this backup was made will be lost. This can’t be undone from here.</p>',
+      '<p style="margin:0; font-size:14px;">This backup file has <strong>' + pendCount + ' employee' + (pendCount === 1 ? '' : 's') + '</strong>. Restoring will replace <strong>all</strong> current data — for every admin and employee — with what’s in this file. Anything entered since this backup was made will be lost. This can’t be undone from here. Everyone’s passcodes, profile photos, sign-ins and announcements are kept as they are now.</p>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-danger" data-action="restore-backup-submit">Restore Backup</button>'
     );
@@ -3013,6 +3161,34 @@ function renderModalInto(app){
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="add-shift-submit">Add Shift</button>'
+    );
+  } else if(ui.modal === 'confirmDeleteShift'){
+    var delCode = ui.modalData.code;
+    var others = shiftCodes().filter(function(c){ return c !== delCode; });
+    var onShift = (STATE.employees || []).filter(function(e){ return e.shift === delCode; });
+    var delBody, delFoot;
+    if(!others.length){
+      delBody = '<p style="margin:0; font-size:14px;"><strong>' + esc(shiftName(delCode)) + '</strong> is the only shift left, so it can’t be removed — add another shift first.</p>';
+      delFoot = '<button class="btn btn-primary" data-action="close-modal">OK</button>';
+    } else {
+      delBody = '<p style="margin:0 0 12px; font-size:14px;">Remove the <strong>' + esc(shiftName(delCode)) + '</strong> shift (' + esc(shiftScheduleLabel(delCode) || shiftWorkDaysLabel(delCode)) + ') entirely? It will disappear from Shift Settings, the Overview filter, the Add/Edit Employee shift list and the Attendance Grid. This can’t be undone, but you can always add a new shift later.</p>' +
+        (onShift.length
+          ? '<p style="margin:0 0 10px; font-size:13.5px;"><strong>' + onShift.length + '</strong> employee' + (onShift.length === 1 ? ' is' : 's are') + ' still on this shift (' + esc(onShift.map(function(e){ return formatName(e.name); }).join(', ')) + '). They’ll be moved to:</p>' +
+            '<label class="field">Move them to<select id="delete-shift-reassign">' +
+              others.map(function(c){ return '<option value="' + esc(c) + '">' + esc(shiftName(c)) + ' — ' + esc(shiftScheduleLabel(c)) + '</option>'; }).join('') +
+            '</select></label>' +
+            '<p class="muted" style="margin:8px 0 0; font-size:12px;">Their past time entries aren’t touched — only which shift they’re assigned to from now on.</p>'
+          : '<p class="muted" style="margin:0; font-size:12.5px;">No employees are on this shift.</p>');
+      delFoot = '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+        '<button class="btn btn-danger" data-action="confirm-delete-shift-submit">Remove Shift</button>';
+    }
+    html = modalShell('Remove shift', delBody, delFoot);
+  } else if(ui.modal === 'viewPhoto'){
+    html = modalShell(ui.modalData.name ? formatName(ui.modalData.name) : 'Profile photo',
+      '<div style="display:flex; justify-content:center;">' +
+        '<img id="view-photo-img" src="' + esc(ui.modalData.src || '') + '" alt="Profile photo" style="display:block; max-width:100%; max-height:70vh; width:auto; height:auto; min-width:200px; border-radius:12px; border:1px solid var(--line); object-fit:contain; background:#f4f5f7;">' +
+      '</div>',
+      '<button class="btn btn-primary" data-action="close-modal">Close</button>'
     );
   } else if(ui.modal === 'confirmRemoveAdmin'){
     html = modalShell('Remove admin',
@@ -3127,6 +3303,28 @@ function modalShell(title, body, foot){
 }
 
 function wireInputsAfterRender(){
+  var entriesTable = $('entries-editor-table');
+  if(entriesTable){
+    // 'change' covers selects, time pickers and a number/text field being
+    // left; 'input' catches typing in the text/number fields so a save
+    // still happens if the admin never clicks out of the last one.
+    entriesTable.addEventListener('change', function(e){
+      var kind = entryFieldKind(e.target);
+      var tr = e.target.closest('tr[data-day]');
+      if(kind && tr) scheduleEntryRowSave(tr, kind === 'minlate' || kind === 'lunch' || kind === 'personal' || kind === 'notes' || kind === 'timeout' ? null : kind);
+    });
+    entriesTable.addEventListener('input', function(e){
+      var kind = entryFieldKind(e.target);
+      if(kind !== 'notes' && kind !== 'minlate' && kind !== 'lunch' && kind !== 'personal') return;
+      var tr = e.target.closest('tr[data-day]');
+      if(tr) scheduleEntryRowSave(tr, null);
+    });
+  }
+  document.querySelectorAll('img[data-action="view-photo"]').forEach(function(img){
+    img.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); handlers['view-photo'](img); }
+    });
+  });
   // Belt-and-suspenders against Chrome's "restore form values on reload":
   // on a plain page reload (not just our own render()), Chrome can
   // re-apply whatever a <select> was last set to in that tab, silently
@@ -3813,7 +4011,12 @@ var handlers = {
   'clear-time-field': function(el){
     var td = el.closest('td');
     var input = td && td.querySelector('input[type="time"]');
-    if(input){ input.value = ''; input.focus(); }
+    if(input){
+      input.value = '';
+      input.focus();
+      var tr = el.closest('tr');
+      if(tr) scheduleEntryRowSave(tr, entryFieldKind(input), true);
+    }
   },
   /* Same no-render reasoning as clear-time-field above — this only
      touches its own row's inputs directly in the DOM. */
@@ -3834,48 +4037,41 @@ var handlers = {
     if(lunch) lunch.value = '';
     if(personal) personal.value = '';
     if(notes) notes.value = '';
+    scheduleEntryRowSave(tr, null, true);
   },
   'admin-goto-entries': function(el){ ui.adminEmpId = el.dataset.id; ui.adminTab = 'entries'; render(); },
-  'save-entries': function(){
-    var empId = ui.adminEmpId;
-    if(!empId) return;
-    var monthKey = adminMonth();
-    var table = $('entries-editor-table');
-    if(!table) return;
-    var emp = getEmployee(empId);
-    var requiredTimeIn = emp ? shiftRequiredTimeIn(emp.shift) : null;
-    var patches = {};
-    table.querySelectorAll('tbody tr').forEach(function(tr){
-      var day = tr.getAttribute('data-day');
-      var status = tr.querySelector('.entry-status').value || null;
-      var timeIn = tr.querySelector('.entry-timein').value || null;
-      var timeOut = tr.querySelector('.entry-timeout').value || null;
-      var minLateVal = tr.querySelector('.entry-minlate').value;
-      var minutesLate = (status === 'L' && minLateVal !== '') ? parseInt(minLateVal, 10) : null;
-      // Auto-detect lateness from the typed-in time the same way an
-      // employee's own punch does, so admins don't have to remember to
-      // pick "Late" by hand every time they type a time past the shift's
-      // required time-in. A status the admin explicitly set to Absent is
-      // left alone; a Min Late the admin already typed by hand (alongside
-      // picking Late themselves) is treated as a deliberate manual
-      // override and left as typed, not recalculated.
-      if(status !== 'A' && minutesLate === null && timeIn && requiredTimeIn){
-        var diff = toMinutesOfDay(timeIn) - toMinutesOfDay(requiredTimeIn);
-        if(diff > 0){ status = 'L'; minutesLate = diff; }
-      }
-      var notes = tr.querySelector('.entry-notes').value || null;
-      var lunchVal = tr.querySelector('.entry-lunch').value;
-      var personalVal = tr.querySelector('.entry-personal').value;
-      var lunchMinutes = lunchVal !== '' ? Math.max(0, Math.min(480, parseInt(lunchVal, 10) || 0)) : null;
-      var personalMinutes = personalVal !== '' ? Math.max(0, Math.min(480, parseInt(personalVal, 10) || 0)) : null;
-      patches[day] = {
-        status: status, timeIn: timeIn, timeOut: timeOut, minutesLate: minutesLate, notes: notes,
-        lunchMinutes: lunchMinutes, personalMinutes: personalMinutes,
-      };
-    });
-    apiPersist('save-entries', { token: session.token, employeeId: empId, monthKey: monthKey, patches: patches },
-      function(s){ Object.keys(patches).forEach(function(day){ setEntry(empId, monthKey, day, patches[day]); }); },
-      { successMsg: 'Entries saved' });
+  // No longer a button (entries autosave, v42) — kept so anything that
+  // still triggers it just sends whatever is waiting right away.
+  'save-entries': function(){ flushEntryAutosaves(); },
+  'view-photo': function(el){
+    ui.modal = 'viewPhoto'; ui.modalData = { src: el.getAttribute('src'), name: el.getAttribute('data-name') || '' }; render();
+  },
+  'view-employee-photo': function(el){
+    var e = getEmployee(el.dataset.id);
+    if(!e || !e.photoDataUrl) return;
+    ui.modal = 'viewPhoto'; ui.modalData = { src: e.photoDataUrl, name: e.name }; render();
+  },
+  'delete-shift-open': function(el){
+    ui.modal = 'confirmDeleteShift'; ui.modalData = { code: el.dataset.code }; render();
+  },
+  'confirm-delete-shift-submit': function(){
+    var code = ui.modalData.code;
+    var onShift = (STATE.employees || []).filter(function(e){ return e.shift === code; });
+    var reassignTo = onShift.length ? (($('delete-shift-reassign')||{}).value || '') : '';
+    if(onShift.length && (!reassignTo || reassignTo === code)){ toast('Pick a shift to move this shift’s employees to.', 'error'); return; }
+    ui.modal = null;
+    if(ui.overviewShift === code) ui.overviewShift = 'all';
+    apiPersist('delete-shift', { token: session.token, code: code, reassignTo: reassignTo || null },
+      function(s){
+        if(reassignTo){
+          s.employees.forEach(function(e){ if(e.shift === code){ e.shift = reassignTo; e.shiftLabel = shiftScheduleLabel(reassignTo); } });
+        }
+        if(s.shifts) delete s.shifts[code];
+      },
+      {
+        successMsg: 'Shift removed' + (onShift.length ? ' — ' + onShift.length + ' moved to ' + shiftName(reassignTo) : ''),
+        onSuccess: function(data){ if(data && data.role === 'admin'){ applyServerState(data); render(); } }
+      });
   },
   'concern-filter': function(el){ ui.concernFilter = el.dataset.filter; render(); },
   'resolve-concern': function(el){
