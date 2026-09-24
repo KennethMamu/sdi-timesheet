@@ -1,8 +1,18 @@
 
 
 
+
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SDI Timesheet</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#15191C">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="SDI Timesheet">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -471,6 +481,7 @@ function applyBootstrapState(data){
 function applyServerState(data){
   if(data && data.siteTexts && typeof data.siteTexts === 'object') STATE.siteTexts = data.siteTexts;
   if(typeof data.chatUnread === 'number') STATE.chatUnread = data.chatUnread;
+  if(data.myPresence) STATE.myPresence = data.myPresence;
   STATE.orgName = data.orgName;
   STATE.primaryAdmin = data.primaryAdmin;
   STATE.shifts = data.shifts || STATE.shifts || {};
@@ -493,6 +504,22 @@ function applyServerState(data){
   }
 }
 
+function applyLightState(data){
+  if(!data) return;
+  if(data.siteTexts && typeof data.siteTexts === 'object') STATE.siteTexts = data.siteTexts;
+  if(typeof data.chatUnread === 'number') STATE.chatUnread = data.chatUnread;
+  if(data.myPresence) STATE.myPresence = data.myPresence;
+  try{
+    var tb = document.querySelector('.topbar');
+    if(tb){
+      var tmp = document.createElement('div');
+      tmp.innerHTML = renderHeader();
+      if(tmp.firstChild && tb.outerHTML !== tmp.firstChild.outerHTML) tb.replaceWith(tmp.firstChild);
+    }
+    positionStatusMenu();
+    chatUpdateBadges();
+  }catch(e){}
+}
 function stopPolling(){
   if(pollTimer){ clearInterval(pollTimer); pollTimer = null; }
 }
@@ -500,14 +527,20 @@ function startPolling(){
   stopPolling();
   pollTimer = setInterval(function(){
     if(!session.token) return;
-    callApi('get-state', { token: session.token }).then(function(data){
+    callApi('get-state', { token: session.token, presence: presencePayload() }).then(function(data){
       // Re-check right when the response actually lands, not just before
       // the request went out — a write (Save Changes, a punch, etc.) can
       // start at any point during this request's own round trip, and if
       // one did, this response may predate it. Applying it now would
       // silently overwrite the write's own optimistic change with stale
       // pre-write data. See pendingWriteCount above for the full story.
-      if(shouldSkipPoll()) return;
+      if(shouldSkipPoll()){
+        // Someone's typing (e.g. in a chat box): leave the page alone, but
+        // still bring the top bar up to date (site name, status, badges) —
+        // it has no inputs, so redrawing just that part is safe (v44).
+        if(pendingWriteCount === 0 && entryAutosavePendingCount() === 0) applyLightState(data);
+        return;
+      }
       applyServerState(data);
       safeRender();
     }).catch(function(err){
@@ -526,7 +559,7 @@ function startPolling(){
 function loadInitialData(){
   var request;
   if(session.token && session.role){
-    request = callApi('get-state', { token: session.token });
+    request = callApi('get-state', { token: session.token, presence: presencePayload() });
   } else {
     request = callApi('bootstrap', {});
   }
@@ -1965,10 +1998,10 @@ function renderHeader(){
   var who = '';
   if(session.role === 'employee'){
     var emp = getEmployee(session.employeeId);
-    who = '<div class="who">Viewing <strong>' + esc(emp ? formatName(emp.name) : 'Unknown') + '</strong>'
+    who = '<div class="who">' + statusButtonHTML() + '<span>Viewing <strong>' + esc(emp ? formatName(emp.name) : 'Unknown') + '</strong></span>'
         + '<button class="btn btn-sm topbar-btn" data-action="go-landing">Switch</button></div>';
   } else if(session.role === 'admin'){
-    who = '<div class="who"><span class="pill pill-accent">Admin</span> <strong>' + esc(session.adminName) + '</strong>'
+    who = '<div class="who">' + statusButtonHTML() + '<span class="pill pill-accent">Admin</span> <strong>' + esc(session.adminName) + '</strong>'
         + '<button class="btn btn-sm topbar-btn" data-action="admin-logout">Exit Admin</button></div>';
   } else {
     // No header button here on purpose — the landing page's own "Manage the
@@ -1984,13 +2017,14 @@ function renderHeader(){
         '<span class="org-name">' + siteText('site.title') + '</span>' +
         '<span class="org-sub">' + siteText('site.subtitle') + '</span>' +
       '</div>' +
+      (isPrimaryAdmin() ? '<button type="button" class="site-name-btn" data-action="site-name-edit" title="Edit the site name and the line under it" aria-label="Edit site name">&#9998; <span>Edit name</span></button>' : '') +
       who +
     '</div>';
 }
 
 function renderFooter(){
   var writeNote = canWrite ? '' : ' · view-only in this window';
-  return '<div class="footer-note">' + siteText('site.footer', { org: esc(STATE.orgName) }) + writeNote + '</div>';
+  return '<div class="footer-note">' + siteText('site.footer', { org: esc(STATE.orgName) }) + writeNote + installAppLinkHTML() + '</div>';
 }
 
 function renderMain(){
@@ -3331,6 +3365,11 @@ function renderModalInto(app){
   } else if(ui.modal === 'siteTextEdit'){
     html = siteTextModalHTML();
     if(!html){ ui.modal = null; return; }
+  } else if(ui.modal === 'siteNameEdit'){
+    html = siteNameModalHTML();
+    if(!html){ ui.modal = null; return; }
+  } else if(ui.modal === 'installHelp'){
+    html = installHelpModalHTML();
   } else {
     return;
   }
@@ -3353,6 +3392,8 @@ function wireInputsAfterRender(){
   chatWireAfterRender();
   calWireAfterRender();
   siteTextWireAfterRender();
+  siteNameWire();
+  positionStatusMenu();
   var entriesTable = $('entries-editor-table');
   if(entriesTable){
     // 'change' covers selects, time pickers and a number/text field being
@@ -4451,7 +4492,8 @@ function chatReset(){
     activeId: null, messages: {}, cursors: {}, hasMore: {}, loadingMsgs: {},
     drafts: {}, pending: {}, editingId: null, sending: false, reactFor: null, panel: null,
     gif: { q: '', results: null, loading: false, error: null },
-    lastListAt: 0, lastMsgAt: 0, busyMsgs: false, busyList: false, search: '', scroll: null
+    lastListAt: 0, lastMsgAt: 0, busyMsgs: false, busyList: false, search: '', scroll: null,
+    reads: {}, readsJson: {}, settings: null
   };
 }
 chatReset();
@@ -4490,14 +4532,16 @@ function chatTitle(c){
   if(c.kind === 'company') return c.name || 'Company GC';
   if(c.kind === 'group') return c.name || 'Group';
   var other = chatOtherKey(c);
-  return other ? chatPersonName(other) : 'Direct message';
+  return other ? chatNameIn(c, other) : 'Direct message';
 }
 function chatSubtitle(c){
   if(!c) return '';
   if(c.kind === 'company') return 'Everyone at ' + (STATE.orgName || 'SDI');
   if(c.kind === 'dm'){
-    var p = chatPerson(chatOtherKey(c));
-    return p ? (p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) + ' shift' : 'Employee')) : 'Direct message';
+    var ok = chatOtherKey(c);
+    var p = chatPerson(ok);
+    var nick = chatNick(c, ok);
+    return p ? (nick ? chatDisplayName(p.name, ok) + ' · ' : '') + PRESENCE_META[chatStatusOf(ok)].label + ' · ' + (p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) + ' shift' : 'Employee')) : 'Direct message';
   }
   var n = (c.members || []).length;
   return (c.shiftCode ? 'Everyone on ' + shiftName(c.shiftCode) + ' shift · ' : '') + n + ' member' + (n === 1 ? '' : 's');
@@ -4506,6 +4550,8 @@ function chatInitials(name){
   return String(name || '?').replace(/,/g, ' ').trim().split(/\s+/).map(function(w){ return w.charAt(0); }).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
 }
 function chatAvatarHTML(c){
+  if(c.photo) return '<span class="chat-av has-img"><img src="' + esc(c.photo) + '" alt=""></span>';
+  if(c.kind === 'dm'){ var ok = chatOtherKey(c); if(ok) return chatPersonAvatarHTML(ok, chatPersonName(ok)); }
   var inner, bg = 'var(--accent-soft)', fg = 'var(--accent)';
   if(c.kind === 'company'){ inner = '&#9733;'; bg = 'var(--ink)'; fg = '#fff'; }
   else if(c.kind === 'group'){ inner = '#'; bg = 'var(--good-soft)'; fg = 'var(--good)'; }
@@ -4585,7 +4631,14 @@ function chatApiError(err){
     unknown_person: 'That person isn’t available to message.',
     name_required: 'Give the group a name.',
     unknown_shift: 'That shift doesn’t exist anymore.',
-    chat_frozen: 'An admin has frozen this chat — it’s read-only for now.'
+    chat_frozen: 'An admin has frozen this chat — it’s read-only for now.',
+    invalid_photo: 'That photo couldn’t be used — try a JPG or PNG.',
+    history_choice_required: 'Choose how much of the chat history they can see.',
+    bad_history_days: 'Enter a number of days from 1 to 365.',
+    already_members: 'They’re already in this group.',
+    shift_member: 'They’re in this group because of its linked shift. To take them out, change the group’s linked shift (Manage group).',
+    not_in_chat: 'That person isn’t in this chat.',
+    nickname_too_long: 'Nicknames can be up to 40 characters.'
   };
   return map[err && err.code] || apiErrorMessage(err);
 }
@@ -4606,6 +4659,9 @@ function chatLoadList(force){
     chat.me = data.me;
     chat.directory = data.directory || [];
     chat.list = data.conversations || [];
+    if(data.settings) chat.settings = data.settings;
+    if(data.me && data.me.presence) STATE.myPresence = { status: data.me.status || null, presence: data.me.presence };
+    if(chat.settings && chat.settings.readReceipts === false) chat.reads = {};
     if(chat.activeId){
       var a = chatConv(chat.activeId);
       if(!a){ chat.activeId = null; chat.editingId = null; if(chatIsOpen()){ toast('That chat was removed by an admin.', 'error'); render(); } }
@@ -4618,6 +4674,8 @@ function chatLoadList(force){
     STATE.chatUnread = chatUnreadTotal();
     chatRefreshSide();
     chatUpdateBadges();
+    // Keep an open Chat details window current (members, photo, nicknames).
+    if((ui.modal === 'chatInfo' || ui.modal === 'chatSettings') && chatIsOpen() && !userIsEditing()) render();
   }).catch(function(err){
     chat.busyList = false;
     chat.lastListAt = Date.now();
@@ -4647,6 +4705,7 @@ function chatLoadMessages(convId){
     chat.loadingMsgs[convId] = false;
     chat.messages[convId] = [];
     chatMergeMessages(convId, data.messages || []);
+    chatStoreReads(convId, data);
     chat.cursors[convId] = data.cursor;
     chat.hasMore[convId] = !!data.hasMore;
     var c = chatConv(convId); if(c) c.unread = 0;
@@ -4686,7 +4745,14 @@ function chatPollActive(){
     chat.busyMsgs = false;
     chat.lastMsgAt = Date.now();
     if(data.cursor) chat.cursors[convId] = data.cursor;
-    if(chatMergeMessages(convId, data.messages || []) && chat.activeId === convId) chatRefreshMessages(false);
+    var known = {};
+    (chat.messages[convId] || []).forEach(function(m){ known[m.id] = true; });
+    var newEvent = (data.messages || []).some(function(m){ return m.kind === 'event' && !known[m.id]; });
+    var readsChanged = chatStoreReads(convId, data);
+    var merged = chatMergeMessages(convId, data.messages || []);
+    if((merged || readsChanged) && chat.activeId === convId) chatRefreshMessages(false);
+    // Someone changed the theme, photo, a nickname or the members: pick it up now.
+    if(newEvent) chatLoadList(true).then(function(){ if(chat.activeId === convId && chatIsOpen() && !userIsEditing() && !chat.editingId) render(); });
   }).catch(function(err){
     chat.busyMsgs = false;
     chat.lastMsgAt = Date.now();
@@ -4848,9 +4914,11 @@ function chatAttachmentHTML(m){
     '<span><span class="chat-file-name">' + esc(a.name) + '</span><span class="chat-file-size">' + esc(chatBytes(a.size)) + (m.pending ? '' : ' · Download') + '</span></span></button>';
 }
 function chatMessageHTML(m, prev, isAdmin){
-  var sameAuthor = prev && prev.senderKey === m.senderKey && !prev.deleted && (Date.parse(m.createdAt) - Date.parse(prev.createdAt) < 5 * 60 * 1000);
+  if(m.kind === 'event') return chatEventHTML(m);
+  var sameAuthor = prev && prev.kind !== 'event' && prev.senderKey === m.senderKey && !prev.deleted && (Date.parse(m.createdAt) - Date.parse(prev.createdAt) < 5 * 60 * 1000);
   var mine = m.mine, isBot = m.senderKey === 'bot';
-  var name = chatDisplayName(m.senderName, m.senderKey);
+  var conv = chatConv(m.conversationId);
+  var name = isBot ? chatDisplayName(m.senderName, m.senderKey) : chatNameIn(conv, m.senderKey, m.senderName);
   var head = sameAuthor ? '' : '<div class="chat-meta">' + (mine ? '' : '<strong>' + esc(name) + '</strong> ') + '<span>' + esc(chatClock(m.createdAt)) + '</span></div>';
   var bodyHTML;
   if(m.deleted){
@@ -4881,7 +4949,7 @@ function chatMessageHTML(m, prev, isAdmin){
       CHAT_QUICK_REACTIONS.map(function(e){ return '<button type="button" data-action="chat-react" data-id="' + esc(m.id) + '" data-emoji="' + e + '">' + e + '</button>'; }).join('') +
       '<button type="button" data-action="chat-react-more" data-id="' + esc(m.id) + '" title="More reactions">+</button>' +
     '</div>' : '';
-  var avatar = mine ? '' : (sameAuthor ? '<span class="chat-av-sm spacer"></span>' : '<span class="chat-av-sm' + (isBot ? ' bot' : '') + '">' + (isBot ? '&#127881;' : esc(chatInitials(name))) + '</span>');
+  var avatar = mine ? '' : (sameAuthor ? '<span class="chat-av-sm spacer"></span>' : '<span class="chat-av-sm' + (isBot ? ' bot' : '') + '">' + (isBot ? '&#127881;' : esc(chatInitials(chatDisplayName(m.senderName, m.senderKey)))) + '</span>');
   return '<div class="chat-msg' + (mine ? ' mine' : '') + (sameAuthor ? ' cont' : '') + '" data-msg-id="' + esc(m.id) + '">' + avatar +
     '<div class="chat-msg-col">' + head +
       '<div class="chat-bubble-row">' + (mine ? actions : '') + bodyHTML + (mine ? '' : actions) + '</div>' +
@@ -4895,12 +4963,17 @@ function chatMessagesHTML(convId){
   var out = chat.hasMore[convId] ? '<div style="text-align:center; margin:6px 0 12px;"><button type="button" class="btn btn-sm btn-ghost" data-action="chat-load-older">Load earlier messages</button></div>' : '';
   if(!arr.length) return out + '<p class="empty">No messages yet — say hello! &#128075;</p>';
   var lastDay = '';
+  var seen = (chat.settings && chat.settings.readReceipts === false) ? {} : chatReceiptsMap(convId);
+  var conv = chatConv(convId);
   arr.forEach(function(m, i){
     var day = new Date(m.createdAt).toDateString();
     if(day !== lastDay){ out += '<div class="chat-day"><span>' + esc(chatDayLabel(m.createdAt)) + '</span></div>'; lastDay = day; }
     var prev = i > 0 && new Date(arr[i - 1].createdAt).toDateString() === day ? arr[i - 1] : null;
     out += chatMessageHTML(m, prev, isAdmin);
+    if(seen[m.id]) out += chatSeenHTML(conv, m, seen[m.id]);
   });
+  var c0 = conv;
+  if(c0 && c0.historyFrom && !chat.hasMore[convId]) out = '<div class="chat-event"><span>Earlier messages in this group aren’t shown to you.</span></div>' + out;
   return out;
 }
 function chatPanelHTML(){
@@ -4959,10 +5032,10 @@ function chatMainHTML(){
     return '<div class="chat-empty-main"><div style="font-size:40px; line-height:1;">&#128172;</div>' +
       '<h2 style="font-size:22px;">Messages</h2><p class="muted" style="margin:0; max-width:340px;">' + siteText('messages.empty', { org: esc(STATE.orgName || 'SDI') }) + '</p></div>';
   }
-  var tools = '';
+  var tools = '<button type="button" class="btn btn-sm" data-action="chat-info-open" title="Photo, theme, nicknames' + (c.kind === 'group' ? ', members' : '') + '">&#9432; Details</button>';
   var isAdmin = session.role === 'admin';
   if(isAdmin){
-    tools = (c.kind === 'group' ? '<button type="button" class="btn btn-sm" data-action="chat-group-edit-open">Manage group</button>' : '') +
+    tools += (c.kind === 'group' ? '<button type="button" class="btn btn-sm" data-action="chat-group-edit-open">Manage group</button>' : '') +
       (c.kind === 'company' ? '<button type="button" class="btn btn-sm" data-action="chat-company-rename-open">Rename</button>' : '') +
       (c.kind === 'company' ? '<button type="button" class="btn btn-sm" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="' + (c.frozen ? '0' : '1') + '">' + (c.frozen ? 'Unfreeze' : 'Freeze') + '</button>' : '') +
       '<button type="button" class="btn btn-sm" data-action="chat-report-open" data-id="' + esc(c.id) + '">Download report</button>';
@@ -4972,9 +5045,9 @@ function chatMainHTML(){
   var composer = (c.frozen && !isAdmin) ? '' : chatComposerHTML(c.id);
   return '<div class="chat-head">' +
       '<button type="button" class="btn btn-sm btn-ghost chat-back" data-action="chat-back" aria-label="Back to chats">&larr;</button>' +
-      chatAvatarHTML(c) +
-      '<div style="min-width:0; flex:1;"><div class="chat-head-title">' + esc(chatTitle(c)) + (c.frozen ? ' <span class="chat-frozen-tag">Frozen</span>' : '') + '</div><div class="chat-head-sub">' + esc(chatSubtitle(c)) + '</div></div>' +
-      '<div class="row" style="gap:6px;">' + tools + '</div>' +
+      '<button type="button" class="chat-head-av" data-action="chat-info-open" title="Chat details">' + chatAvatarHTML(c) + '</button>' +
+      '<div style="min-width:0; flex:1; cursor:pointer;" data-action="chat-info-open"><div class="chat-head-title">' + esc(chatTitle(c)) + (c.frozen ? ' <span class="chat-frozen-tag">Frozen</span>' : '') + '</div><div class="chat-head-sub">' + esc(chatSubtitle(c)) + '</div></div>' +
+      '<div class="row chat-head-tools" style="gap:6px;">' + tools + '</div>' +
     '</div>' +
     '<div class="chat-msgs" id="chat-msgs">' + chatMessagesHTML(c.id) + '</div>' +
     frozenBanner + composer +
@@ -4984,6 +5057,7 @@ function chatPageHTML(){
   chatEnsureSession();
   if(!chat.list && !chat.busyList) setTimeout(function(){ chatLoadList(); }, 0);
   var isAdmin = session.role === 'admin';
+  var activeConv = chatConv(chat.activeId);
   return '<div class="chat-shell' + (chat.activeId ? ' has-active' : '') + '">' +
     '<aside class="chat-side">' +
       '<div class="chat-side-head">' +
@@ -4991,22 +5065,30 @@ function chatPageHTML(){
         '<div class="row" style="gap:6px;">' +
           '<button type="button" class="btn btn-sm btn-primary" data-action="chat-new-dm-open">New chat</button>' +
           (isAdmin ? '<button type="button" class="btn btn-sm" data-action="chat-group-new-open">New group</button>' : '') +
+          (isAdmin ? '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-settings-open" title="Chat settings (read receipts)" aria-label="Chat settings">&#9881;</button>' : '') +
         '</div></div>' +
         '<input type="text" id="chat-search" placeholder="Search chats" autocomplete="off" value="' + esc(chat.search || '') + '">' +
+        '<div class="chat-online" id="chat-online">' + chatOnlineStripHTML() + '</div>' +
       '</div>' +
       '<div class="chat-list" id="chat-list">' + chatListItemsHTML() + '</div>' +
     '</aside>' +
-    '<section class="chat-main" id="chat-main">' + chatMainHTML() + '</section>' +
+    '<section class="chat-main" id="chat-main" style="' + chatThemeStyle(activeConv) + '">' + chatMainHTML() + '</section>' +
   '</div>';
 }
 function chatRefreshSide(){
   var el = $('chat-list');
   if(el) el.innerHTML = chatListItemsHTML();
+  var on = $('chat-online');
+  if(on) on.innerHTML = chatOnlineStripHTML();
   if(chat.activeId){
     var c = chatConv(chat.activeId);
     var t = document.querySelector('.chat-head-title'), s = document.querySelector('.chat-head-sub');
     if(c && t) t.innerHTML = esc(chatTitle(c)) + (c.frozen ? ' <span class="chat-frozen-tag">Frozen</span>' : '');
     if(c && s) s.textContent = chatSubtitle(c);
+    var av = document.querySelector('.chat-head-av');
+    if(c && av) av.innerHTML = chatAvatarHTML(c);
+    var main = $('chat-main');
+    if(c && main){ var st = chatThemeStyle(c); if(main.getAttribute('style') !== st) main.setAttribute('style', st); }
   }
 }
 function chatNearBottom(box){ return box.scrollHeight - box.scrollTop - box.clientHeight < 90; }
@@ -5067,6 +5149,12 @@ function chatSearchGifs(q){
   });
 }
 function chatWireAfterRender(){
+  chatInfoWire();
+  if(ui.modal === 'chatGroupNew'){
+    var saveDraft = function(){ ui.modalData.draftForm = chatReadGroupForm(); };
+    ['chat-grp-name', 'chat-grp-shift'].forEach(function(id){ var el = $(id); if(el){ el.addEventListener('input', saveDraft); el.addEventListener('change', saveDraft); } });
+    document.querySelectorAll('.chat-grp-member').forEach(function(el){ el.addEventListener('change', saveDraft); });
+  }
   var ccn = $('chat-company-name');
   if(ccn) ccn.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); CHAT_HANDLERS['chat-company-rename-save'](); } });
   var input = $('chat-input');
@@ -5258,18 +5346,26 @@ function chatDmResultsHTML(query){
   var people = chat.directory.filter(function(p){ return p.active && (!chat.me || p.key !== chat.me.key); });
   if(q) people = people.filter(function(p){ return chatDisplayName(p.name, p.key).toLowerCase().indexOf(q) !== -1; });
   if(!people.length) return '<p class="empty">No one matches.</p>';
+  people = people.slice().sort(function(a, b){
+    var ao = a.status && a.status !== 'offline' ? 0 : 1, bo = b.status && b.status !== 'offline' ? 0 : 1;
+    return ao - bo || chatDisplayName(a.name, a.key).localeCompare(chatDisplayName(b.name, b.key));
+  });
   return people.map(function(p){
     return '<button type="button" class="chat-person" data-action="chat-start-dm" data-key="' + esc(p.key) + '">' +
-      '<span class="chat-av">' + esc(chatInitials(chatDisplayName(p.name, p.key))) + '</span>' +
-      '<span style="flex:1; text-align:left;">' + esc(chatDisplayName(p.name, p.key)) + '</span>' +
+      chatPersonAvatarHTML(p.key, chatDisplayName(p.name, p.key)) +
+      '<span style="flex:1; text-align:left;">' + esc(chatDisplayName(p.name, p.key)) + '<span class="ci-sub">' + esc(PRESENCE_META[p.status || 'offline'].label) + '</span></span>' +
       '<span class="badge-shift">' + esc(p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) : 'Employee')) + '</span>' +
     '</button>';
   }).join('');
 }
 function chatGroupFormHTML(existing){
-  var members = existing ? (existing.explicit || existing.members || []) : (chat.me ? [chat.me.key] : []);
+  // A new group's half-filled form survives the page's background refresh
+  // and picking a photo (both redraw the window).
+  var draft = !existing && ui.modalData && ui.modalData.draftForm ? ui.modalData.draftForm : null;
+  var members = existing ? (existing.explicit || existing.members || []) : (draft ? draft.memberKeys : (chat.me ? [chat.me.key] : []));
+  var selShift = existing ? existing.shiftCode : (draft ? draft.shiftCode : null);
   var shiftOpts = '<option value="">No — I’ll pick members</option>' + shiftCodes().map(function(code){
-    return '<option value="' + esc(code) + '"' + (existing && existing.shiftCode === code ? ' selected' : '') + '>Yes — everyone on ' + esc(shiftName(code)) + ' shift</option>';
+    return '<option value="' + esc(code) + '"' + (selShift === code ? ' selected' : '') + '>Yes — everyone on ' + esc(shiftName(code)) + ' shift</option>';
   }).join('');
   var people = chat.directory.filter(function(p){ return p.active; });
   var group = function(role, label){
@@ -5281,12 +5377,21 @@ function chatGroupFormHTML(existing){
         esc(nm) + (p.role === 'employee' && p.shift ? ' <span class="muted" style="font-size:12px;">· ' + esc(shiftName(p.shift)) + '</span>' : '') + '</label>';
     }).join('');
   };
+  var photoRow = existing ? '' : '<div class="field">Group photo <span class="muted" style="font-weight:400;">(optional)</span><div class="row" style="gap:10px; align-items:center; margin-top:4px;">' +
+      (ui.modalData.newPhoto ? '<span class="chat-av has-img" style="width:48px;height:48px;"><img src="' + esc(ui.modalData.newPhoto) + '" alt=""></span>' : '<span class="chat-av" style="width:48px;height:48px;background:var(--good-soft);color:var(--good);">#</span>') +
+      '<button type="button" class="btn btn-sm" data-action="chat-group-photo-pick">' + (ui.modalData.newPhoto ? 'Change photo' : 'Choose photo') + '</button>' +
+      (ui.modalData.newPhoto ? '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-group-photo-clear">Remove</button>' : '') +
+    '</div></div>';
+  var membersRow = existing
+    ? '<div class="field">Members<p class="muted" style="margin:4px 0 0; font-size:12.5px; font-weight:400;">Add or remove people from <strong>Details → Members</strong> in the chat header. When you add someone you’ll be asked whether they can see the earlier messages.</p></div>'
+    : '<div class="field">Members<input type="text" id="chat-grp-filter" placeholder="Filter names" autocomplete="off" style="margin-top:4px;">' +
+      '<div class="chat-grp-box">' + group('admin', 'Admins') + group('employee', 'Employees') + '</div></div>';
   return '<div class="stack" style="gap:12px;">' +
-    '<label class="field">Group name <span class="req">*</span><input type="text" id="chat-grp-name" maxlength="80" placeholder="e.g. AM Shift, Tekla Project" value="' + esc(existing ? existing.name || '' : '') + '"></label>' +
+    '<label class="field">Group name <span class="req">*</span><input type="text" id="chat-grp-name" maxlength="80" placeholder="e.g. AM Shift, Tekla Project" value="' + esc(existing ? existing.name || '' : (draft ? draft.name : '')) + '"></label>' +
+    photoRow +
     '<label class="field">Include a whole shift automatically?<select id="chat-grp-shift">' + shiftOpts + '</select></label>' +
     '<p class="muted" style="margin:-6px 0 0; font-size:12px;">' + siteText('messages.group_shift') + '</p>' +
-    '<div class="field">Members<input type="text" id="chat-grp-filter" placeholder="Filter names" autocomplete="off" style="margin-top:4px;">' +
-      '<div class="chat-grp-box">' + group('admin', 'Admins') + group('employee', 'Employees') + '</div></div>' +
+    membersRow +
   '</div>';
 }
 function chatReportFormHTML(){
@@ -5320,6 +5425,8 @@ function chatModalHTML(){
       '<div id="chat-dm-results" class="chat-people">' + chatDmResultsHTML('') + '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>');
   }
+  if(ui.modal === 'chatInfo') return chatInfoModalHTML();
+  if(ui.modal === 'chatSettings') return session.role === 'admin' ? chatSettingsModalHTML() : '';
   if(ui.modal === 'chatGroupNew'){
     return modalShell('New group chat', chatGroupFormHTML(null),
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
@@ -5493,8 +5600,9 @@ var CHAT_HANDLERS = {
     var f = chatReadGroupForm();
     if(!f.name){ toast('Give the group a name.', 'error'); return; }
     if(!f.shiftCode && f.memberKeys.filter(function(k){ return !chat.me || k !== chat.me.key; }).length === 0){ toast('Pick a shift or at least one member.', 'error'); return; }
+    var newPhoto = ui.modalData.newPhoto || null;
     ui.modal = null; render();
-    callApi('chat-create-group', { token: session.token, name: f.name, shiftCode: f.shiftCode, memberKeys: f.memberKeys }).then(function(data){
+    callApi('chat-create-group', { token: session.token, name: f.name, shiftCode: f.shiftCode, memberKeys: f.memberKeys, photo: newPhoto }).then(function(data){
       toast('Group created', 'success');
       return chatLoadList(true).then(function(){ chatOpenConversation(data.conversationId); });
     }).catch(function(err){ toast(chatApiError(err), 'error'); });
@@ -5514,7 +5622,7 @@ var CHAT_HANDLERS = {
     var f = chatReadGroupForm();
     if(!f.name){ toast('Give the group a name.', 'error'); return; }
     ui.modal = null; render();
-    callApi('chat-update-group', { token: session.token, conversationId: id, name: f.name, shiftCode: f.shiftCode || '', memberKeys: f.memberKeys }).then(function(){
+    callApi('chat-update-group', { token: session.token, conversationId: id, name: f.name, shiftCode: f.shiftCode || '' }).then(function(){
       toast('Group updated', 'success');
       chatLoadList(true);
     }).catch(function(err){ toast(chatApiError(err), 'error'); });
@@ -5616,6 +5724,590 @@ var CHAT_HANDLERS = {
   }
 };
 
+
+/* ============================================================
+   v44 — ONLINE STATUS, GROUP PHOTOS, NICKNAMES, THEMES,
+   MEMBERS & HISTORY, READ RECEIPTS
+   ------------------------------------------------------------
+   • Online status (Teams-style): Available, Busy, Do not disturb,
+     Be right back, Appear away, Appear offline, Reset status. The
+     app's normal ~7s refresh tells the server "I'm here" (and
+     whether you've touched the app in the last 5 minutes), so
+     everyone else sees who's online in Messages.
+   • Group photos (admins), chat themes (anyone in the chat),
+     per-chat nicknames (anyone in the chat), adding/removing
+     group members (admins) with a "how much history can they
+     see?" question, and read receipts an admin can switch off.
+   ============================================================ */
+var PRESENCE_IDLE_MS = 5 * 60 * 1000;
+var presenceLastInput = Date.now();
+['mousemove', 'mousedown', 'keydown', 'touchstart', 'wheel', 'scroll', 'focus'].forEach(function(ev){
+  window.addEventListener(ev, function(){ presenceLastInput = Date.now(); }, { passive: true, capture: true });
+});
+function presencePayload(){
+  return { active: !document.hidden && Date.now() - presenceLastInput < PRESENCE_IDLE_MS };
+}
+
+var PRESENCE_META = {
+  available: { label: 'Available', menu: 'Available' },
+  busy: { label: 'Busy', menu: 'Busy' },
+  dnd: { label: 'Do not disturb', menu: 'Do not disturb' },
+  brb: { label: 'Be right back', menu: 'Be right back' },
+  away: { label: 'Away', menu: 'Appear away' },
+  offline: { label: 'Offline', menu: 'Appear offline' }
+};
+var PRESENCE_ORDER = ['available', 'busy', 'dnd', 'brb', 'away', 'offline'];
+function presenceSVG(st, size){
+  var s = size || 14;
+  var inner;
+  if(st === 'available') inner = '<circle cx="8" cy="8" r="8" fill="#13A10E"/><path d="M4.6 8.3l2.2 2.2 4.6-4.7" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>';
+  else if(st === 'busy') inner = '<circle cx="8" cy="8" r="8" fill="#D13438"/>';
+  else if(st === 'dnd') inner = '<circle cx="8" cy="8" r="8" fill="#D13438"/><rect x="4" y="7" width="8" height="2" rx="1" fill="#fff"/>';
+  else if(st === 'brb' || st === 'away') inner = '<circle cx="8" cy="8" r="8" fill="#EAA300"/><path d="M8 4.2v4.1l2.6 1.6" stroke="#fff" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/>';
+  else inner = '<circle cx="8" cy="8" r="6.9" fill="#fff" stroke="#8A8886" stroke-width="1.8"/><path d="M5.7 5.7l4.6 4.6M10.3 5.7l-4.6 4.6" stroke="#8A8886" stroke-width="1.6" stroke-linecap="round"/>';
+  return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' + inner + '</svg>';
+}
+function presenceDotHTML(st){
+  st = st || 'offline';
+  return '<span class="pdot" title="' + esc((PRESENCE_META[st] || PRESENCE_META.offline).label) + '">' + presenceSVG(st, 12) + '</span>';
+}
+function myPresence(){
+  var p = STATE.myPresence;
+  return (p && p.presence) || 'available';
+}
+function chatStatusOf(key){
+  if(chat.me && key === chat.me.key) return myPresence();
+  var p = chatPerson(key);
+  return (p && p.status) || 'offline';
+}
+function chatIsOnline(key){ return chatStatusOf(key) !== 'offline'; }
+
+/* ---------- header status picker ---------- */
+function statusButtonHTML(){
+  if(!session.token || (session.role !== 'admin' && session.role !== 'employee')) return '';
+  var st = myPresence();
+  var manual = STATE.myPresence && STATE.myPresence.status;
+  var label = manual ? PRESENCE_META[manual].menu : PRESENCE_META[st].label;
+  var menu = '';
+  if(ui.statusMenu){
+    menu = '<div class="status-menu" role="menu">' + PRESENCE_ORDER.map(function(k){
+      var on = manual ? manual === k : false;
+      return '<button type="button" role="menuitemradio" aria-checked="' + (on ? 'true' : 'false') + '" class="status-opt' + (on ? ' on' : '') + '" data-action="status-set" data-status="' + k + '">' + presenceSVG(k, 18) + '<span>' + esc(PRESENCE_META[k].menu) + '</span></button>';
+    }).join('') +
+    '<div class="status-sep"></div>' +
+    '<button type="button" role="menuitem" class="status-opt" data-action="status-set" data-status="reset"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/></svg><span>Reset status</span></button>' +
+    '<p class="status-note">Reset goes back to automatic: Available while you’re using the app, Away after 5 minutes idle.</p>' +
+    '</div>';
+  }
+  return '<span class="status-wrap"><button type="button" class="status-btn" data-action="status-menu-toggle" aria-haspopup="menu" aria-expanded="' + (ui.statusMenu ? 'true' : 'false') + '" title="Set your status">' +
+    presenceSVG(st, 14) + '<span class="status-label">' + esc(label) + '</span><span aria-hidden="true" style="opacity:.7;">&#9662;</span></button>' + menu + '</span>';
+}
+document.addEventListener('click', function(e){
+  if(ui.statusMenu && !(e.target.closest && e.target.closest('.status-wrap'))){
+    ui.statusMenu = false;
+    var m = document.querySelector('.status-menu'); if(m) m.remove();
+    var b = document.querySelector('.status-btn'); if(b) b.setAttribute('aria-expanded', 'false');
+  }
+});
+document.addEventListener('keydown', function(e){
+  if(e.key === 'Escape' && ui.statusMenu){ ui.statusMenu = false; var m = document.querySelector('.status-menu'); if(m) m.remove(); }
+});
+
+/* ---------- names, photos, themes ---------- */
+var CHAT_THEME_STYLES = {
+  'default': { label: 'Classic', mine: '#E3EEF5', ink: '#1B2A33', line: '#C6DCEA', bg: '#FBFCFC', accent: '#2A6F97' },
+  ocean: { label: 'Ocean', mine: '#0B74B5', ink: '#fff', line: '#0B74B5', bg: 'linear-gradient(180deg,#E6F4FC 0%,#F6FBFE 100%)', accent: '#0B74B5' },
+  forest: { label: 'Forest', mine: '#2E7D4F', ink: '#fff', line: '#2E7D4F', bg: 'linear-gradient(180deg,#EAF6EE 0%,#F7FBF8 100%)', accent: '#2E7D4F' },
+  sunset: { label: 'Sunset', mine: 'linear-gradient(135deg,#F0628F 0%,#FF9164 100%)', ink: '#fff', line: 'transparent', bg: 'linear-gradient(180deg,#FFF0EA 0%,#FFF9F6 100%)', accent: '#E8577E' },
+  berry: { label: 'Berry', mine: '#8E2D8E', ink: '#fff', line: '#8E2D8E', bg: 'linear-gradient(180deg,#F8ECF7 0%,#FCF7FC 100%)', accent: '#8E2D8E' },
+  lavender: { label: 'Lavender', mine: '#7466D6', ink: '#fff', line: '#7466D6', bg: 'linear-gradient(180deg,#F1EFFD 0%,#FAF9FF 100%)', accent: '#6A5BD0' },
+  rose: { label: 'Rose', mine: '#D6336C', ink: '#fff', line: '#D6336C', bg: 'linear-gradient(180deg,#FDEEF3 0%,#FFF8FA 100%)', accent: '#D6336C' },
+  gold: { label: 'Gold', mine: '#F6C445', ink: '#3B2A00', line: '#E9B52F', bg: 'linear-gradient(180deg,#FFF7E0 0%,#FFFCF3 100%)', accent: '#B7860B' },
+  teal: { label: 'Teal', mine: '#0F8B8D', ink: '#fff', line: '#0F8B8D', bg: 'linear-gradient(180deg,#E7F6F6 0%,#F6FBFB 100%)', accent: '#0F8B8D' },
+  graphite: { label: 'Graphite', mine: '#2F3A42', ink: '#fff', line: '#2F3A42', bg: 'linear-gradient(180deg,#EEF1F3 0%,#F8F9FA 100%)', accent: '#2F3A42' }
+};
+var CHAT_THEME_ORDER = ['default', 'ocean', 'forest', 'sunset', 'berry', 'lavender', 'rose', 'gold', 'teal', 'graphite'];
+function chatThemeStyle(c){
+  var t = CHAT_THEME_STYLES[(c && c.theme) || 'default'] || CHAT_THEME_STYLES['default'];
+  return '--cm-mine:' + t.mine + ';--cm-ink:' + t.ink + ';--cm-line:' + t.line + ';--cm-bg:' + t.bg + ';--cm-accent:' + t.accent + ';';
+}
+function chatNick(c, key){
+  var n = c && c.nicknames && key ? c.nicknames[key] : '';
+  return n || '';
+}
+/* The name to show for someone inside one chat: their nickname there, if any. */
+function chatNameIn(c, key, rawName){
+  var nick = chatNick(c, key);
+  if(nick) return nick;
+  return rawName ? chatDisplayName(rawName, key) : chatPersonName(key);
+}
+function chatPersonAvatarHTML(key, name, cls){
+  var p = chatPerson(key);
+  var photo = null;
+  if(key && key.indexOf('a:') === 0 && STATE.adminPhotos) photo = STATE.adminPhotos[key.slice(2)] || null;
+  if(!photo && key && key.indexOf('e:') === 0){ var emp = getEmployee(key.slice(2)); if(emp && emp.photoDataUrl) photo = emp.photoDataUrl; }
+  var inner = photo ? '<img src="' + esc(photo) + '" alt="">' : esc(chatInitials(name || (p ? chatDisplayName(p.name, key) : '?')));
+  return '<span class="chat-av' + (photo ? ' has-img' : '') + (cls ? ' ' + cls : '') + '">' + inner + presenceDotHTML(chatStatusOf(key)) + '</span>';
+}
+
+/* Photos are cropped to a centred square and shrunk to 256px before
+   they're sent, so they stay small (same idea as profile pictures). */
+function chatResizePhoto(file, cb){
+  if(!file || !/^image\//.test(file.type || '')){ cb(null, 'Pick a photo (JPG, PNG or WebP).'); return; }
+  var url = URL.createObjectURL(file);
+  var img = new Image();
+  img.onerror = function(){ URL.revokeObjectURL(url); cb(null, 'That photo couldn’t be opened — try a JPG or PNG.'); };
+  img.onload = function(){
+    URL.revokeObjectURL(url);
+    var side = Math.min(img.width, img.height);
+    var sx = (img.width - side) / 2, sy = (img.height - side) / 2;
+    var out = 256;
+    var canvas = document.createElement('canvas');
+    canvas.width = out; canvas.height = out;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, out, out);
+    ctx.drawImage(img, sx, sy, side, side, 0, 0, out, out);
+    var data = canvas.toDataURL('image/jpeg', 0.85);
+    if(data.length > 380000) data = canvas.toDataURL('image/jpeg', 0.6);
+    cb(data);
+  };
+  img.src = url;
+}
+/* One file picker that lives outside the app's redrawn area, so the page
+   refreshing in the background while the picker is open can't lose the
+   photo someone chooses. */
+function chatPickPhoto(cb){
+  var inp = document.getElementById('sdi-photo-picker');
+  if(!inp){
+    inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*'; inp.id = 'sdi-photo-picker';
+    inp.style.display = 'none';
+    document.body.appendChild(inp);
+  }
+  inp.value = '';
+  inp.onchange = function(){
+    var f = inp.files && inp.files[0];
+    if(!f) return;
+    chatResizePhoto(f, function(data, err){ if(err) toast(err, 'error'); else cb(data); });
+  };
+  inp.click();
+}
+
+/* ---------- who's online ---------- */
+function chatOnlinePeople(){
+  return (chat.directory || []).filter(function(p){ return p.active && (!chat.me || p.key !== chat.me.key) && p.status && p.status !== 'offline'; })
+    .sort(function(a, b){ return chatDisplayName(a.name, a.key).localeCompare(chatDisplayName(b.name, b.key)); });
+}
+function chatOnlineStripHTML(){
+  if(!chat.list) return '';
+  var people = chatOnlinePeople();
+  var head = '<div class="chat-online-head"><span class="chat-online-dot"></span>Online now <span class="muted">· ' + people.length + '</span></div>';
+  if(!people.length) return head + '<p class="chat-online-empty">No one else is online right now.</p>';
+  return head + '<div class="chat-online-row">' + people.map(function(p){
+    var nm = chatDisplayName(p.name, p.key);
+    var first = nm.indexOf(',') !== -1 ? nm.split(',')[1].trim().split(' ')[0] : nm.split(' ')[0];
+    return '<button type="button" class="chat-online-person" data-action="chat-start-dm" data-key="' + esc(p.key) + '" title="' + esc(nm + ' — ' + PRESENCE_META[p.status].label + ' · click to message') + '">' +
+      chatPersonAvatarHTML(p.key, nm) + '<span>' + esc(first || nm) + '</span></button>';
+  }).join('') + '</div>';
+}
+
+/* ---------- read receipts ---------- */
+function chatReceiptsMap(convId){
+  var reads = chat.reads[convId];
+  var arr = chat.messages[convId] || [];
+  var out = {};
+  if(!reads || !reads.length || !arr.length) return out;
+  reads.forEach(function(r){
+    var at = Date.parse(r.at);
+    for(var i = arr.length - 1; i >= 0; i--){
+      var m = arr[i];
+      if(m.pending || m.kind === 'event' || m.deleted) continue;
+      if(Date.parse(m.createdAt) <= at){
+        if(m.senderKey !== r.key) (out[m.id] = out[m.id] || []).push(r.key);
+        break;
+      }
+    }
+  });
+  return out;
+}
+function chatSeenHTML(c, m, keys){
+  if(!keys || !keys.length) return '';
+  var names = keys.map(function(k){ return chatNameIn(c, k); });
+  var shown = keys.slice(0, 5).map(function(k){
+    var nm = chatNameIn(c, k);
+    return '<span class="chat-seen-av" title="' + esc(nm) + '">' + esc(chatInitials(nm)) + '</span>';
+  }).join('');
+  var more = keys.length > 5 ? '<span class="chat-seen-more">+' + (keys.length - 5) + '</span>' : '';
+  var label = c && c.kind === 'dm' ? 'Seen' : 'Seen by ' + (keys.length === 1 ? names[0] : keys.length);
+  return '<div class="chat-seen' + (m.mine ? ' mine' : '') + '" title="Seen by ' + esc(names.join(', ')) + '"><span class="chat-seen-label">' + esc(label) + '</span>' + shown + more + '</div>';
+}
+
+/* ---------- chat notes ("Ken changed the theme") ---------- */
+function chatEventHTML(m){
+  var who = m.senderName || '';
+  var text = m.body || '';
+  // Show the actor's nickname if they have one here.
+  var c = chatConv(m.conversationId);
+  var nick = chatNick(c, m.senderKey);
+  if(nick && who && text.indexOf(who) === 0) text = nick + text.slice(who.length);
+  return '<div class="chat-event" data-msg-id="' + esc(m.id) + '"><span>' + esc(text) + ' <span class="chat-event-time">' + esc(chatClock(m.createdAt)) + '</span></span></div>';
+}
+
+/* ---------- Chat details window ---------- */
+function chatInfoPeople(c){
+  var keys;
+  if(c.kind === 'company') keys = (chat.directory || []).filter(function(p){ return p.active; }).map(function(p){ return p.key; });
+  else keys = (c.members || []).slice();
+  return keys.sort(function(a, b){
+    if(chat.me && a === chat.me.key) return -1;
+    if(chat.me && b === chat.me.key) return 1;
+    return chatPersonName(a).localeCompare(chatPersonName(b));
+  });
+}
+function chatRoleLabel(key){
+  var p = chatPerson(key);
+  if(!p) return '';
+  return p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) + ' shift' : 'Employee');
+}
+function chatBigAvatarHTML(c){
+  if(c.photo) return '<span class="ci-av"><img src="' + esc(c.photo) + '" alt=""></span>';
+  if(c.kind === 'dm'){ var o = chatOtherKey(c); return '<span class="ci-av-wrap">' + chatPersonAvatarHTML(o, chatPersonName(o), 'ci-av') + '</span>'; }
+  if(c.kind === 'company') return '<span class="ci-av" style="background:var(--ink);color:#fff;">&#9733;</span>';
+  return '<span class="ci-av" style="background:var(--good-soft);color:var(--good);">#</span>';
+}
+function chatInfoMainHTML(c, md){
+  var isAdmin = session.role === 'admin';
+  var locked = c.frozen && !isAdmin;
+  var out = '<div class="ci-top">' + chatBigAvatarHTML(c) +
+    '<div style="min-width:0;"><div class="ci-title">' + esc(chatTitle(c)) + '</div><div class="muted" style="font-size:12.5px;">' + esc(chatSubtitle(c)) + '</div>' +
+    (isAdmin && c.kind !== 'dm' ? '<div class="row" style="gap:6px; margin-top:8px; flex-wrap:wrap;">' +
+      '<button type="button" class="btn btn-sm" data-action="chat-photo-change">' + (c.photo ? 'Change photo' : 'Add group photo') + '</button>' +
+      (c.photo ? '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-photo-remove">Remove photo</button>' : '') +
+    '</div>' : '') +
+    '</div></div>';
+
+  // Theme
+  out += '<div class="ci-sec"><div class="ci-sec-head"><h3>Chat theme</h3>' + (locked ? '<span class="muted" style="font-size:12px;">Frozen — only admins can change it</span>' : '<span class="muted" style="font-size:12px;">Everyone in this chat sees it</span>') + '</div>' +
+    '<div class="ci-themes">' + CHAT_THEME_ORDER.map(function(k){
+      var t = CHAT_THEME_STYLES[k];
+      var on = (c.theme || 'default') === k;
+      return '<button type="button" class="ci-theme' + (on ? ' on' : '') + '" data-action="chat-theme-set" data-theme="' + k + '"' + (locked ? ' disabled' : '') + ' aria-pressed="' + (on ? 'true' : 'false') + '">' +
+        '<span class="ci-swatch" style="background:' + t.bg + ';"><span style="background:' + t.mine + ';"></span></span><span>' + esc(t.label) + '</span></button>';
+    }).join('') + '</div></div>';
+
+  // Nicknames
+  var people = chatInfoPeople(c);
+  out += '<div class="ci-sec"><div class="ci-sec-head"><h3>Nicknames</h3><span class="muted" style="font-size:12px;">Only show in this chat</span></div>' +
+    '<div class="ci-list">' + people.map(function(k){
+      var real = chatPersonName(k);
+      var nick = chatNick(c, k);
+      var me = chat.me && k === chat.me.key;
+      if(md.nickEdit === k){
+        return '<div class="ci-row">' + chatPersonAvatarHTML(k, real) +
+          '<div class="ci-row-main"><input type="text" id="ci-nick-input" maxlength="40" placeholder="Nickname for ' + esc(real) + '" value="' + esc(typeof md.nickDraft === 'string' ? md.nickDraft : nick) + '"></div>' +
+          '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-nick-cancel">Cancel</button>' +
+          '<button type="button" class="btn btn-sm btn-primary" data-action="chat-nick-save" data-key="' + esc(k) + '">Save</button></div>';
+      }
+      return '<div class="ci-row">' + chatPersonAvatarHTML(k, real) +
+        '<div class="ci-row-main"><div class="ci-name">' + esc(nick || real) + (me ? ' <span class="muted" style="font-weight:400;">(you)</span>' : '') + '</div>' +
+        '<div class="ci-sub">' + (nick ? esc(real) : '<span class="muted">No nickname</span>') + '</div></div>' +
+        (locked ? '' : '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-nick-edit" data-key="' + esc(k) + '">' + (nick ? 'Edit' : 'Set') + '</button>' +
+          (nick ? '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-nick-clear" data-key="' + esc(k) + '" title="Remove nickname">&times;</button>' : '')) +
+      '</div>';
+    }).join('') + '</div></div>';
+
+  // Members (groups)
+  if(c.kind === 'group'){
+    var explicit = c.explicitMembers || c.members || [];
+    out += '<div class="ci-sec"><div class="ci-sec-head"><h3>Members <span class="muted" style="font-weight:500;">· ' + (c.members || []).length + '</span></h3>' +
+      (isAdmin ? '<button type="button" class="btn btn-sm btn-primary" data-action="chat-add-open">+ Add people</button>' : '') + '</div>' +
+      (c.shiftCode ? '<p class="muted" style="font-size:12px; margin:0 0 6px;">Everyone on ' + esc(shiftName(c.shiftCode)) + ' shift is in this group automatically.</p>' : '') +
+      '<div class="ci-list">' + (c.members || []).slice().sort(function(a, b){ return chatPersonName(a).localeCompare(chatPersonName(b)); }).map(function(k){
+        var viaShift = explicit.indexOf(k) === -1;
+        var me = chat.me && k === chat.me.key;
+        var right = '';
+        if(isAdmin){
+          if(viaShift) right = '<span class="ci-tag">via shift</span>';
+          else if(md.confirmRemove === k) right = '<span class="ci-confirm">' + (me ? 'Leave?' : 'Remove?') + ' <button type="button" class="btn btn-sm btn-ghost" data-action="chat-member-remove-cancel">No</button><button type="button" class="btn btn-sm btn-danger" data-action="chat-member-remove" data-key="' + esc(k) + '">' + (me ? 'Leave' : 'Remove') + '</button></span>';
+          else right = '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-member-remove-ask" data-key="' + esc(k) + '">' + (me ? 'Leave' : 'Remove') + '</button>';
+        }
+        return '<div class="ci-row">' + chatPersonAvatarHTML(k, chatPersonName(k)) +
+          '<div class="ci-row-main"><div class="ci-name">' + esc(chatNameIn(c, k)) + (me ? ' <span class="muted" style="font-weight:400;">(you)</span>' : '') + '</div>' +
+          '<div class="ci-sub">' + esc(chatRoleLabel(k)) + ' · ' + esc(PRESENCE_META[chatStatusOf(k)].label) + '</div></div>' + right + '</div>';
+      }).join('') + '</div></div>';
+  }
+
+  if(isAdmin && c.kind !== 'dm'){
+    out += '<div class="ci-sec"><div class="ci-sec-head"><h3>Admin</h3></div><div class="row" style="gap:6px; flex-wrap:wrap;">' +
+      (c.kind === 'group' ? '<button type="button" class="btn btn-sm" data-action="chat-group-edit-open">Rename / linked shift</button>' : '<button type="button" class="btn btn-sm" data-action="chat-company-rename-open">Rename</button>') +
+      '<button type="button" class="btn btn-sm" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="' + (c.frozen ? '0' : '1') + '">' + (c.frozen ? 'Unfreeze' : 'Freeze') + '</button>' +
+      '<button type="button" class="btn btn-sm" data-action="chat-report-open" data-id="' + esc(c.id) + '">Download report</button>' +
+      (c.kind === 'group' ? '<button type="button" class="btn btn-sm btn-danger" data-action="chat-group-delete-open">Delete group</button>' : '') +
+    '</div></div>';
+  }
+  return out;
+}
+function chatInfoAddHTML(c, md){
+  var q = (md.addFilter || '').trim().toLowerCase();
+  var inChat = c.members || [];
+  var people = (chat.directory || []).filter(function(p){ return p.active && inChat.indexOf(p.key) === -1; })
+    .sort(function(a, b){ return chatDisplayName(a.name, a.key).localeCompare(chatDisplayName(b.name, b.key)); });
+  var pick = md.pick || {};
+  var n = Object.keys(pick).filter(function(k){ return pick[k]; }).length;
+  var list = people.length ? people.map(function(p){
+    var nm = chatDisplayName(p.name, p.key);
+    var hide = q && nm.toLowerCase().indexOf(q) === -1;
+    return '<label class="ci-row ci-pick"' + (hide ? ' style="display:none;"' : '') + ' data-name="' + esc(nm.toLowerCase()) + '">' +
+      '<input type="checkbox" class="ci-add-pick" value="' + esc(p.key) + '"' + (pick[p.key] ? ' checked' : '') + '>' +
+      chatPersonAvatarHTML(p.key, nm) +
+      '<span class="ci-row-main"><span class="ci-name">' + esc(nm) + '</span><span class="ci-sub">' + esc(chatRoleLabel(p.key)) + '</span></span></label>';
+  }).join('') : '<p class="empty">Everyone is already in this group.</p>';
+  return '<p class="muted" style="margin:0 0 8px; font-size:13px;">Add people to <strong>' + esc(chatTitle(c)) + '</strong>. Next you’ll choose how much of the chat history they can see.</p>' +
+    '<input type="text" id="ci-add-filter" placeholder="Search a name" autocomplete="off" value="' + esc(md.addFilter || '') + '" style="width:100%; margin-bottom:8px;">' +
+    '<div class="ci-list ci-scroll">' + list + '</div>' +
+    '<p class="muted" id="ci-add-count" style="margin:8px 0 0; font-size:12.5px;">' + (n ? n + ' selected' : 'No one selected yet') + '</p>';
+}
+function chatInfoHistoryHTML(c, md){
+  var pick = md.pick || {};
+  var keys = Object.keys(pick).filter(function(k){ return pick[k]; });
+  var names = keys.map(function(k){ return chatPersonName(k); });
+  var who = names.length <= 3 ? names.join(', ') : names.slice(0, 3).join(', ') + ' and ' + (names.length - 3) + ' more';
+  var h = md.hist || '';
+  var days = md.days || 7;
+  var opt = function(val, title, sub){
+    return '<label class="ci-hist' + (h === val ? ' on' : '') + '"><input type="radio" name="ci-hist" value="' + val + '"' + (h === val ? ' checked' : '') + '>' +
+      '<span><strong>' + title + '</strong><span class="ci-sub">' + sub + '</span></span></label>';
+  };
+  return '<p style="margin:0 0 4px; font-size:14px;">Can <strong>' + esc(who) + '</strong> see the earlier messages in this group?</p>' +
+    '<p class="muted" style="margin:0 0 12px; font-size:12.5px;">They’ll see everything sent from now on either way.</p>' +
+    '<div class="stack" style="gap:8px;">' +
+      opt('all', 'Yes — show all chat history', 'Everything ever sent in this group.') +
+      opt('days', 'Only recent messages', 'The last <input type="number" id="ci-hist-days" min="1" max="365" value="' + esc(String(days)) + '" style="width:64px; padding:2px 6px; margin:0 4px;"> days.') +
+      opt('none', 'No — just new messages', 'Nothing sent before they’re added.') +
+    '</div>';
+}
+function chatInfoModalHTML(){
+  var c = chatConv(ui.modalData.id);
+  if(!c) return '';
+  var md = ui.modalData;
+  var view = md.view || 'main';
+  if(view === 'add' && session.role === 'admin' && c.kind === 'group'){
+    var n = Object.keys(md.pick || {}).filter(function(k){ return md.pick[k]; }).length;
+    return modalShell('Add people', chatInfoAddHTML(c, md),
+      '<button class="btn btn-ghost" data-action="chat-info-view" data-view="main">Back</button>' +
+      '<button class="btn btn-primary" data-action="chat-add-next" id="ci-add-next"' + (n ? '' : ' disabled') + '>Next</button>');
+  }
+  if(view === 'history' && session.role === 'admin' && c.kind === 'group'){
+    var k = Object.keys(md.pick || {}).filter(function(x){ return md.pick[x]; }).length;
+    return modalShell('Chat history for new people', chatInfoHistoryHTML(c, md),
+      '<button class="btn btn-ghost" data-action="chat-info-view" data-view="add">Back</button>' +
+      '<button class="btn btn-primary" data-action="chat-add-confirm"' + (md.busy ? ' disabled' : '') + '>' + (md.busy ? 'Adding…' : 'Add ' + k + (k === 1 ? ' person' : ' people')) + '</button>');
+  }
+  return modalShell('Chat details', '<div class="ci">' + chatInfoMainHTML(c, md) + '</div>',
+    '<button class="btn btn-primary" data-action="close-modal">Done</button>');
+}
+function chatSettingsModalHTML(){
+  var on = !chat.settings || chat.settings.readReceipts !== false;
+  return modalShell('Chat settings',
+    '<label class="ci-toggle"><input type="checkbox" id="chat-set-receipts"' + (on ? ' checked' : '') + '>' +
+      '<span><strong>Read receipts</strong><span class="ci-sub">Show who has seen messages (“Seen by…”) in every chat, for everyone. Turn off to hide them for everyone.</span></span></label>' +
+    '<p class="muted" style="margin:12px 0 0; font-size:12.5px;">Applies company-wide and takes effect within a few seconds. Any admin can change this.</p>',
+    '<button class="btn btn-primary" data-action="close-modal">Done</button>');
+}
+
+function chatInfoWire(){
+  var nick = $('ci-nick-input');
+  if(nick){
+    if(document.activeElement !== nick){ nick.focus(); nick.setSelectionRange(nick.value.length, nick.value.length); }
+    nick.addEventListener('input', function(){ ui.modalData.nickDraft = nick.value; });
+    nick.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){ e.preventDefault(); e.stopPropagation(); handlers['chat-nick-save']({ dataset: { key: ui.modalData.nickEdit } }); }
+      if(e.key === 'Escape'){ e.preventDefault(); handlers['chat-nick-cancel'](); }
+    });
+  }
+  var filt = $('ci-add-filter');
+  if(filt){
+    filt.addEventListener('input', function(){
+      ui.modalData.addFilter = filt.value;
+      var q = filt.value.trim().toLowerCase();
+      document.querySelectorAll('.ci-pick').forEach(function(el){ el.style.display = !q || (el.getAttribute('data-name') || '').indexOf(q) !== -1 ? '' : 'none'; });
+    });
+  }
+  document.querySelectorAll('.ci-add-pick').forEach(function(cb){
+    cb.addEventListener('change', function(){
+      ui.modalData.pick = ui.modalData.pick || {};
+      ui.modalData.pick[cb.value] = cb.checked;
+      var n = Object.keys(ui.modalData.pick).filter(function(k){ return ui.modalData.pick[k]; }).length;
+      var cnt = $('ci-add-count'); if(cnt) cnt.textContent = n ? n + ' selected' : 'No one selected yet';
+      var nx = $('ci-add-next'); if(nx) nx.disabled = !n;
+    });
+  });
+  document.querySelectorAll('input[name="ci-hist"]').forEach(function(r){
+    r.addEventListener('change', function(){
+      ui.modalData.hist = r.value;
+      document.querySelectorAll('.ci-hist').forEach(function(l){ l.classList.toggle('on', !!l.querySelector('input:checked')); });
+    });
+  });
+  var days = $('ci-hist-days');
+  if(days){
+    days.addEventListener('input', function(){ ui.modalData.days = days.value; });
+    days.addEventListener('focus', function(){
+      ui.modalData.hist = 'days';
+      var r = document.querySelector('input[name="ci-hist"][value="days"]'); if(r) r.checked = true;
+      document.querySelectorAll('.ci-hist').forEach(function(l){ l.classList.toggle('on', !!l.querySelector('input:checked')); });
+    });
+  }
+  var rec = $('chat-set-receipts');
+  if(rec) rec.addEventListener('change', function(){ CHAT_V44_HANDLERS['chat-receipts-set'](rec.checked); });
+}
+
+function chatSetConvField(id, field, value){
+  var c = chatConv(id);
+  var old = c ? c[field] : undefined;
+  if(c) c[field] = value;
+  return function(){ if(c) c[field] = old; };
+}
+
+var CHAT_V44_HANDLERS = {
+  'status-menu-toggle': function(){ ui.statusMenu = !ui.statusMenu; render(); },
+  'status-set': function(el){
+    var st = el.dataset.status;
+    var prev = STATE.myPresence;
+    STATE.myPresence = st === 'reset' ? { status: null, presence: 'available' } : { status: st, presence: st };
+    ui.statusMenu = false;
+    render();
+    callApi('chat-set-status', { token: session.token, status: st }).then(function(d){
+      STATE.myPresence = { status: d.status || null, presence: d.presence };
+      toast(st === 'reset' ? 'Status reset — it now follows your activity' : 'Status set to ' + PRESENCE_META[st].menu, 'success');
+      render();
+    }).catch(function(err){ STATE.myPresence = prev; render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-info-open': function(){
+    var c = chatConv(chat.activeId);
+    if(!c) return;
+    var inp = $('chat-input'); if(inp) chat.drafts[c.id] = inp.value;
+    ui.modal = 'chatInfo'; ui.modalData = { id: c.id, view: 'main' }; render();
+  },
+  'chat-info-view': function(el){ ui.modalData.view = el.dataset.view; ui.modalData.confirmRemove = null; render(); },
+  'chat-settings-open': function(){ ui.modal = 'chatSettings'; ui.modalData = {}; render(); },
+  'chat-receipts-set': function(on){
+    var prev = chat.settings ? chat.settings.readReceipts : true;
+    chat.settings = Object.assign({}, chat.settings || {}, { readReceipts: !!on });
+    if(!on){ chat.reads = {}; chatRefreshMessages(false, true); }
+    callApi('chat-settings-save', { token: session.token, readReceipts: !!on }).then(function(){
+      toast(on ? 'Read receipts are on for everyone' : 'Read receipts are off for everyone', 'success');
+      if(on && chat.activeId) chatLoadMessages(chat.activeId);
+    }).catch(function(err){ chat.settings.readReceipts = prev; render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-theme-set': function(el){
+    var c = chatConv(ui.modalData.id || chat.activeId);
+    var theme = el.dataset.theme;
+    if(!c || (c.theme || 'default') === theme) return;
+    var undo = chatSetConvField(c.id, 'theme', theme);
+    render();
+    callApi('chat-set-theme', { token: session.token, conversationId: c.id, theme: theme }).then(function(){
+      toast('Theme changed to ' + CHAT_THEME_STYLES[theme].label, 'success');
+      chatPollActive();
+    }).catch(function(err){ undo(); render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-nick-edit': function(el){ ui.modalData.nickEdit = el.dataset.key; ui.modalData.nickDraft = undefined; render(); },
+  'chat-nick-cancel': function(){ ui.modalData.nickEdit = null; ui.modalData.nickDraft = undefined; render(); },
+  'chat-nick-save': function(el){ chatSaveNick(el.dataset.key, (($('ci-nick-input') || {}).value || '').trim()); },
+  'chat-nick-clear': function(el){ chatSaveNick(el.dataset.key, ''); },
+  'chat-photo-change': function(){
+    var id = ui.modalData.id;
+    chatPickPhoto(function(data){
+      var c = chatConv(id); if(!c) return;
+      var undo = chatSetConvField(id, 'photo', data);
+      render();
+      callApi('chat-set-photo', { token: session.token, conversationId: id, photo: data }).then(function(){
+        toast('Group photo updated', 'success'); chatPollActive();
+      }).catch(function(err){ undo(); render(); toast(chatApiError(err), 'error'); });
+    });
+  },
+  'chat-photo-remove': function(){
+    var id = ui.modalData.id;
+    var undo = chatSetConvField(id, 'photo', null);
+    render();
+    callApi('chat-set-photo', { token: session.token, conversationId: id, photo: null }).then(function(){
+      toast('Group photo removed', 'success'); chatPollActive();
+    }).catch(function(err){ undo(); render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-member-remove-ask': function(el){ ui.modalData.confirmRemove = el.dataset.key; render(); },
+  'chat-member-remove-cancel': function(){ ui.modalData.confirmRemove = null; render(); },
+  'chat-member-remove': function(el){
+    var id = ui.modalData.id, key = el.dataset.key;
+    var c = chatConv(id);
+    var name = chatPersonName(key);
+    var leaving = chat.me && key === chat.me.key;
+    ui.modalData.confirmRemove = null;
+    var undoM = chatSetConvField(id, 'members', (c.members || []).filter(function(k){ return k !== key; }));
+    var undoE = chatSetConvField(id, 'explicitMembers', (c.explicitMembers || []).filter(function(k){ return k !== key; }));
+    if(leaving){ ui.modal = null; chat.activeId = null; }
+    render();
+    callApi('chat-remove-member', { token: session.token, conversationId: id, memberKey: key }).then(function(){
+      toast(leaving ? 'You left the group' : name + ' was removed from the group', 'success');
+      chatLoadList(true); chatPollActive();
+    }).catch(function(err){ undoM(); undoE(); render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-add-open': function(){ ui.modalData.view = 'add'; ui.modalData.pick = {}; ui.modalData.addFilter = ''; ui.modalData.hist = ''; ui.modalData.days = 7; render(); var f = $('ci-add-filter'); if(f) f.focus(); },
+  'chat-add-next': function(){
+    var n = Object.keys(ui.modalData.pick || {}).filter(function(k){ return ui.modalData.pick[k]; }).length;
+    if(!n){ toast('Pick at least one person.', 'error'); return; }
+    ui.modalData.view = 'history'; render();
+  },
+  'chat-add-confirm': function(){
+    var md = ui.modalData;
+    if(md.busy) return;
+    var keys = Object.keys(md.pick || {}).filter(function(k){ return md.pick[k]; });
+    var h = md.hist;
+    if(!h){ toast('Choose how much of the chat history they can see.', 'error'); return; }
+    var payload = { token: session.token, conversationId: md.id, memberKeys: keys, history: h };
+    if(h === 'days'){
+      var d = Math.floor(Number(($('ci-hist-days') || {}).value || md.days));
+      if(!(d >= 1 && d <= 365)){ toast('Enter a number of days from 1 to 365.', 'error'); return; }
+      payload.days = d;
+    }
+    md.busy = true; render();
+    callApi('chat-add-members', payload).then(function(d){
+      var n = (d.added || keys).length;
+      toast('Added ' + n + (n === 1 ? ' person' : ' people') + (h === 'all' ? ' — they can see all history' : h === 'none' ? ' — they’ll only see new messages' : ' — they can see the last ' + payload.days + ' days'), 'success');
+      ui.modalData = { id: md.id, view: 'main' };
+      return chatLoadList(true).then(function(){ render(); chatPollActive(); });
+    }).catch(function(err){ md.busy = false; render(); toast(chatApiError(err), 'error'); });
+  },
+  'chat-group-photo-pick': function(){
+    if(ui.modal === 'chatGroupNew') ui.modalData.draftForm = chatReadGroupForm();
+    chatPickPhoto(function(data){ if(ui.modal !== 'chatGroupNew') return; ui.modalData.newPhoto = data; render(); });
+  },
+  'chat-group-photo-clear': function(){ if(ui.modal === 'chatGroupNew') ui.modalData.draftForm = chatReadGroupForm(); ui.modalData.newPhoto = null; render(); }
+};
+function chatStoreReads(convId, data){
+  if(!data) return false;
+  if(data.readReceipts === false || data.readReceipts === true) chat.settings = Object.assign({}, chat.settings || {}, { readReceipts: data.readReceipts });
+  var reads = data.reads || null;
+  var j = JSON.stringify(reads);
+  if(chat.readsJson[convId] === j) return false;
+  chat.readsJson[convId] = j;
+  chat.reads[convId] = reads;
+  return true;
+}
+function chatSaveNick(key, nick){
+  var id = ui.modalData.id;
+  var c = chatConv(id);
+  if(!c) return;
+  if(nick.length > 40){ toast('Nicknames can be up to 40 characters.', 'error'); return; }
+  var before = Object.assign({}, c.nicknames || {});
+  c.nicknames = Object.assign({}, c.nicknames || {});
+  if(nick) c.nicknames[key] = nick; else delete c.nicknames[key];
+  ui.modalData.nickEdit = null; ui.modalData.nickDraft = undefined;
+  render();
+  callApi('chat-set-nickname', { token: session.token, conversationId: id, memberKey: key, nickname: nick }).then(function(){
+    toast(nick ? 'Nickname set' : 'Nickname removed', 'success'); chatPollActive();
+  }).catch(function(err){ c.nicknames = before; render(); toast(chatApiError(err), 'error'); });
+}
+Object.assign(CHAT_HANDLERS, CHAT_V44_HANDLERS);
+
 /* ============================================================
    CHAT REPORT → PDF
    Lays the transcript out as A4-width HTML in a hidden iframe,
@@ -5657,6 +6349,11 @@ function chatReportHTMLParts(report, media){
     c.messages.forEach(function(m){
       var day = new Date(m.createdAt).toDateString();
       if(day !== lastDay){ lastDay = day; var d = new Date(m.createdAt); blocks.push({ html: '<div class="rep-day">' + esc(WEEKDAY_LONG[d.getDay()] + ', ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear()) + '</div>' }); }
+      if(m.kind === 'event'){
+        // Chat notes (theme, photo, nickname, member changes) — one line each.
+        blocks.push({ html: '<div class="rep-msg" style="font-style:italic;color:#555;">' + esc(chatClock(m.createdAt)) + ' · ' + esc(m.body || '') + '</div>' });
+        return;
+      }
       var who = nameOf(m.senderKey, m.senderName);
       var status = m.deletedAt ? '<span class="rep-tag del">DELETED by ' + esc(m.deletedBy ? chatDisplayName(m.deletedBy, m.deletedBy === m.senderName ? m.senderKey : null) : '?') + ' · ' + esc(chatFullStamp(m.deletedAt)) + '</span>'
         : m.editedAt ? '<span class="rep-tag ed">EDITED</span>' : '';
@@ -6392,6 +7089,7 @@ function siteTextTabHTML(){
     return '<div class="card"><div class="card-pad" style="padding-bottom:4px;"><h2 style="font-size:16px; margin:0;">' + esc(p[1]) + '</h2></div>' + rows + '</div>';
   }).join('');
   return '<div class="stack" style="gap:14px;">' +
+    siteNameCardHTML() +
     '<div class="card card-pad stack" style="gap:10px;">' +
       '<div><h2 style="font-size:18px; margin:0;">Website Text</h2>' +
       '<p class="muted" style="margin:4px 0 0; font-size:12.5px;">Reword the descriptions shown around the site. Only you, as primary admin, can change these — other admins and employees just see the result, within a few seconds of saving. “Restore default” puts back the original wording. ' +
@@ -6493,6 +7191,240 @@ var SITE_TEXT_HANDLERS = {
 })();
 
 Object.assign(handlers, SITE_TEXT_HANDLERS);
+
+/* ============================================================
+   v44 — SITE NAME, EDITED RIGHT FROM THE HEADER
+   The primary admin sees an "Edit name" button next to the site
+   name in the top bar. The header (and browser tab) change live
+   while typing; Save makes it permanent for everyone.
+   ============================================================ */
+function siteNameModalHTML(){
+  if(ui.modal !== 'siteNameEdit' || !isPrimaryAdmin()) return '';
+  var md = ui.modalData;
+  var t = typeof md.title === 'string' ? md.title : siteTextRaw('site.title');
+  var sub = typeof md.sub === 'string' ? md.sub : siteTextRaw('site.subtitle');
+  var custom = siteTextIsCustom('site.title') || siteTextIsCustom('site.subtitle');
+  return modalShell('Site name',
+    '<p class="muted" style="margin:0 0 12px; font-size:12.5px;">Shown in the top bar on every page and as the browser-tab name. The top bar changes as you type — press Save to make it permanent for everyone.</p>' +
+    '<div class="stack" style="gap:12px;">' +
+      '<label class="field">Site name <span class="req">*</span><input type="text" id="sn-title" maxlength="80" value="' + esc(t) + '" placeholder="' + esc(SITE_TEXT_BY_KEY['site.title'].def) + '"></label>' +
+      '<label class="field">Line under the name <span class="muted" style="font-weight:400;">(e.g. “Automated Timesheet” — leave empty to hide it)</span><input type="text" id="sn-sub" maxlength="120" value="' + esc(sub) + '" placeholder="' + esc(SITE_TEXT_BY_KEY['site.subtitle'].def) + '"></label>' +
+      '<div class="sn-preview"><img src="' + LOGO_SRC + '" alt=""><div><div class="sn-p-title" id="sn-p-title">' + esc(t) + '</div><div class="sn-p-sub" id="sn-p-sub">' + esc(sub) + '</div></div></div>' +
+    '</div>',
+    (custom ? '<button class="btn btn-ghost" data-action="site-name-reset" style="margin-right:auto;">Restore original</button>' : '') +
+    '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+    '<button class="btn btn-primary" data-action="site-name-save">Save</button>');
+}
+function siteNameCardHTML(){
+  return '<div class="card card-pad stack" style="gap:10px;">' +
+    '<div><h2 style="font-size:16px; margin:0;">Site name &amp; header</h2>' +
+    '<p class="muted" style="margin:4px 0 0; font-size:12.5px;">The name in the top bar (and browser tab), and the line under it. You can also click <strong>&#9998; Edit name</strong> next to the name in the top bar on any page.</p></div>' +
+    '<div class="grid grid-2">' +
+      '<label class="field">Site name<input type="text" id="st-site-title" maxlength="80" value="' + esc(siteTextRaw('site.title')) + '"></label>' +
+      '<label class="field">Line under the name<input type="text" id="st-site-sub" maxlength="120" value="' + esc(siteTextRaw('site.subtitle')) + '"></label>' +
+    '</div>' +
+    '<div class="row" style="gap:8px; justify-content:flex-end;">' +
+      ((siteTextIsCustom('site.title') || siteTextIsCustom('site.subtitle')) ? '<button class="btn btn-ghost" data-action="site-name-reset">Restore original</button>' : '') +
+      '<button class="btn btn-primary" data-action="site-name-inline-save">Save</button>' +
+    '</div></div>';
+}
+function siteNameLivePreview(title, sub){
+  var n = document.querySelector('.topbar .org-name'), s = document.querySelector('.topbar .org-sub');
+  if(n) n.textContent = title;
+  if(s) s.textContent = sub;
+  var pt = $('sn-p-title'), ps = $('sn-p-sub');
+  if(pt) pt.textContent = title;
+  if(ps) ps.textContent = sub;
+  var clean = title.replace(/\s+/g, ' ').trim();
+  document.title = clean || SITE_TEXT_BY_KEY['site.title'].def;
+}
+function siteNameSave(title, sub){
+  title = String(title || '').replace(/\s+/g, ' ').trim();
+  sub = String(sub || '').replace(/\s+/g, ' ').trim();
+  if(!title){ toast('The site name can’t be empty.', 'error'); return; }
+  var texts = {};
+  var put = function(key, val){
+    // Typing the original wording back is the same as restoring it.
+    texts[key] = (val === SITE_TEXT_BY_KEY[key].def) ? null : val;
+  };
+  put('site.title', title);
+  put('site.subtitle', sub);
+  siteTextPersist({ texts: texts }, function(S){
+    S.siteTexts = Object.assign({}, S.siteTexts || {});
+    Object.keys(texts).forEach(function(k){ if(texts[k] === null) delete S.siteTexts[k]; else S.siteTexts[k] = texts[k]; });
+  }, 'Site name updated for everyone');
+}
+function siteNameWire(){
+  var t = $('sn-title'), s = $('sn-sub');
+  if(t && s){
+    var upd = function(){ ui.modalData.title = t.value; ui.modalData.sub = s.value; siteNameLivePreview(t.value, s.value); };
+    t.addEventListener('input', upd); s.addEventListener('input', upd);
+    [t, s].forEach(function(el){ el.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); e.stopPropagation(); siteNameSave(t.value, s.value); } }); });
+    siteNameLivePreview(t.value, s.value);
+  }
+}
+Object.assign(handlers, {
+  'site-name-edit': function(){
+    if(!isPrimaryAdmin()) return;
+    ui.statusMenu = false;
+    ui.modal = 'siteNameEdit'; ui.modalData = {};
+    render();
+    var t = $('sn-title'); if(t){ t.focus(); t.select(); }
+  },
+  'site-name-save': function(){ siteNameSave(($('sn-title') || {}).value, ($('sn-sub') || {}).value); },
+  'site-name-inline-save': function(){ siteNameSave(($('st-site-title') || {}).value, ($('st-site-sub') || {}).value); },
+  'site-name-reset': function(){
+    siteTextPersist({ texts: { 'site.title': null, 'site.subtitle': null } }, function(S){
+      S.siteTexts = Object.assign({}, S.siteTexts || {}); delete S.siteTexts['site.title']; delete S.siteTexts['site.subtitle'];
+    }, 'Original site name restored');
+  }
+});
+
+/* ============================================================
+   v44 — INSTALL AS AN APP
+   With manifest.webmanifest, sw.js and the two icons uploaded
+   next to index.html, Chrome/Edge (computer and Android) offer
+   "Install", and iPhone/iPad can "Add to Home Screen". The app
+   then opens in its own window with its own icon — still the
+   same live site, so it's always up to date.
+   ============================================================ */
+var installPromptEvent = null;
+function appIsInstalled(){
+  try{ return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || window.navigator.standalone === true; }catch(e){ return false; }
+}
+function isIOSDevice(){
+  return /iphone|ipad|ipod/i.test(navigator.userAgent || '') || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+window.addEventListener('beforeinstallprompt', function(e){
+  e.preventDefault();
+  installPromptEvent = e;
+  var el = document.querySelector('.install-link'); if(el) el.removeAttribute('hidden');
+});
+window.addEventListener('appinstalled', function(){ installPromptEvent = null; toast('Installed! Open it from your apps or home screen.', 'success'); render(); });
+function installAppLinkHTML(){
+  if(appIsInstalled()) return '';
+  return ' · <button type="button" class="install-link" data-action="install-app">&#11015; Install app</button>';
+}
+(function registerServiceWorker(){
+  if(!('serviceWorker' in navigator) || location.protocol !== 'https:') return;
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('sw.js').catch(function(){ /* sw.js not uploaded yet — the site works the same without it */ });
+  });
+})();
+Object.assign(handlers, {
+  'install-app': function(){
+    if(installPromptEvent){
+      var ev = installPromptEvent;
+      installPromptEvent = null;
+      ev.prompt();
+      if(ev.userChoice) ev.userChoice.then(function(r){ if(r && r.outcome !== 'accepted') installPromptEvent = ev; });
+      return;
+    }
+    ui.modal = 'installHelp'; ui.modalData = {}; render();
+  }
+});
+function installHelpModalHTML(){
+  var ios = isIOSDevice();
+  var step = function(title, body){ return '<div class="inst-step"><strong>' + title + '</strong><div>' + body + '</div></div>'; };
+  return modalShell('Install ' + siteTextTitle(),
+    '<p class="muted" style="margin:0 0 12px; font-size:13px;">Install it once and it opens like a normal app — its own icon and window, no browser tabs. It’s the same live timesheet, so it’s always up to date.</p>' +
+    '<div class="stack" style="gap:10px;">' +
+      (ios ? step('iPhone / iPad (Safari)', 'Tap the <strong>Share</strong> button (square with an arrow), then <strong>Add to Home Screen</strong> → <strong>Add</strong>.') : '') +
+      step('Android (Chrome)', 'Tap the <strong>⋮</strong> menu → <strong>Install app</strong> (or <strong>Add to Home screen</strong>).') +
+      step('Windows / Mac (Chrome or Edge)', 'Click the <strong>install icon</strong> at the right end of the address bar (a monitor with a down-arrow), or open the <strong>⋮ / …</strong> menu → <strong>Install ' + esc(siteTextTitle()) + '</strong> (Edge: <strong>Apps → Install this site as an app</strong>).') +
+      (!ios ? step('iPhone / iPad (Safari)', 'Tap <strong>Share</strong> → <strong>Add to Home Screen</strong>.') : '') +
+    '</div>',
+    '<button class="btn btn-primary" data-action="close-modal">Got it</button>');
+}
+
+(function injectV44Styles(){
+  var css =
+  /* long windows scroll inside the screen (Chat details on a phone) */
+  '.modal{max-height:calc(100vh - 40px);max-height:calc(100dvh - 40px);display:flex;flex-direction:column;} .modal-head,.modal-foot{flex:none;} .modal-body{overflow-y:auto;min-height:0;overscroll-behavior:contain;}' +
+  '.modal-foot{padding-top:12px;}' +
+  /* presence dots + avatars with photos */
+  '.chat-av{position:relative;} .chat-av.has-img{background:#fff;padding:0;} .chat-av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;}' +
+  '.pdot{position:absolute;right:-2px;bottom:-2px;width:14px;height:14px;border-radius:50%;background:#fff;display:flex;align-items:center;justify-content:center;line-height:0;}' +
+  '.chat-head-av{background:none;border:0;padding:0;cursor:pointer;border-radius:50%;flex:none;}' +
+  '.chat-head-tools{flex-wrap:wrap;justify-content:flex-end;}' +
+  /* status picker (top bar) */
+  '.status-wrap{position:relative;display:inline-flex;}' +
+  '.status-btn{display:inline-flex;align-items:center;gap:6px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.22);color:#F4F5F3;border-radius:999px;padding:4px 10px 4px 5px;font:inherit;font-size:12.5px;cursor:pointer;line-height:1.2;}' +
+  '.status-btn:hover{background:rgba(255,255,255,.16);border-color:#fff;} .status-btn svg{flex:none;}' +
+  '.status-menu{position:absolute;top:calc(100% + 6px);right:0;z-index:80;background:#fff;color:var(--ink);border:1px solid var(--line);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.2);padding:6px;width:250px;max-width:calc(100vw - 16px);}' +
+  '.status-opt{display:flex;align-items:center;gap:12px;width:100%;background:none;border:0;border-radius:6px;padding:9px 12px;font:inherit;font-size:14px;color:inherit;cursor:pointer;text-align:left;}' +
+  '.status-opt:hover{background:var(--surface-2);} .status-opt.on{box-shadow:inset 0 0 0 2px var(--ink);}' +
+  '.status-sep{height:1px;background:var(--line);margin:4px 2px;}' +
+  '.status-note{font-size:11.5px;color:var(--ink-soft);margin:2px 10px 6px;line-height:1.4;}' +
+  /* site name button */
+  '.topbar .org-meta:has(+ .site-name-btn){margin-right:0;}' +
+  '.site-name-btn{background:transparent;border:1px dashed rgba(255,255,255,.35);color:#C8D0D4;border-radius:8px;padding:3px 8px;font:inherit;font-size:12px;cursor:pointer;margin:0 auto 0 4px;align-self:center;}' +
+  '.site-name-btn:hover{border-color:#fff;color:#fff;}' +
+  '.sn-preview{display:flex;gap:10px;align-items:center;background:#15191C;color:#fff;border-radius:10px;padding:10px 14px;}' +
+  '.sn-preview img{height:28px;} .sn-p-title{font-family:"Big Shoulders Display",sans-serif;font-weight:700;font-size:18px;letter-spacing:.02em;line-height:1.15;} .sn-p-sub{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#A9B3B9;}' +
+  /* who's online */
+  '.chat-online{margin-top:-2px;} .chat-online-head{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}' +
+  '.chat-online-dot{width:8px;height:8px;border-radius:50%;background:#13A10E;box-shadow:0 0 0 3px rgba(19,161,14,.15);}' +
+  '.chat-online-row{display:flex;gap:2px;overflow-x:auto;padding:6px 0 2px;scrollbar-width:thin;}' +
+  '.chat-online-person{display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;border-radius:10px;padding:4px 2px;cursor:pointer;font:inherit;color:inherit;width:60px;flex:none;}' +
+  '.chat-online-person:hover{background:var(--surface-2);} .chat-online-person > span:last-child{font-size:11px;max-width:56px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.chat-online-empty{font-size:12px;color:var(--ink-soft);margin:4px 0 0;}' +
+  /* themes */
+  '.chat-main .chat-msgs{background:var(--cm-bg,#FBFCFC);}' +
+  '.chat-main .chat-msg.mine .chat-bubble{background:var(--cm-mine,var(--accent-soft));color:var(--cm-ink,inherit);border-color:var(--cm-line,#C6DCEA);}' +
+  '.chat-main .chat-msg.mine .chat-bubble a{color:inherit;text-decoration:underline;}' +
+  '.chat-main .chat-msg.mine .chat-bubble .chat-edited,.chat-main .chat-msg.mine .chat-bubble .chat-progress-label{color:inherit;opacity:.8;}' +
+  '.chat-main .chat-msg.mine .chat-bubble.deleted{background:transparent;color:var(--ink-soft);border-color:var(--line);}' +
+  '.chat-main .chat-msg.mine .chat-bubble.media{background:transparent;border-color:transparent;}' +
+  '.chat-main .chat-msg.mine .chat-bubble.editing{background:var(--surface);color:var(--ink);border-color:var(--line);}' +
+  '.chat-main .chat-msg.mine .chat-file{color:var(--ink);}' +
+  '.chat-main .chat-composer .btn-primary{background:var(--cm-accent,var(--accent));border-color:var(--cm-accent,var(--accent));}' +
+  /* chat notes + read receipts */
+  '.chat-event{text-align:center;margin:10px 0;} .chat-event > span{display:inline-block;font-size:12px;color:var(--ink-soft);background:rgba(255,255,255,.75);border:1px solid var(--line);padding:3px 10px;border-radius:12px;max-width:90%;overflow-wrap:anywhere;}' +
+  '.chat-event-time{opacity:.7;font-size:11px;margin-left:4px;}' +
+  '.chat-seen{display:flex;gap:3px;align-items:center;margin:3px 0 0 36px;font-size:11px;color:var(--ink-soft);} .chat-seen.mine{justify-content:flex-end;margin-left:0;}' +
+  '.chat-seen-label{margin-right:3px;} .chat-seen-av{width:16px;height:16px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:7.5px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;border:1px solid #fff;} .chat-seen-more{font-size:10.5px;font-weight:600;}' +
+  /* chat details window */
+  '.ci-top{display:flex;gap:14px;align-items:center;}' +
+  '.ci-av{width:64px !important;height:64px !important;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:24px !important;font-weight:700;flex:none;position:relative;background:var(--accent-soft);color:var(--accent);}' +
+  '.ci-av img{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;} .ci-av .pdot{right:0;bottom:0;}' +
+  '.ci-title{font-weight:700;font-size:17px;overflow-wrap:anywhere;}' +
+  '.ci-sec{border-top:1px solid var(--line);padding-top:12px;margin-top:14px;}' +
+  '.ci-sec-head{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;} .ci-sec h3{font-size:14px;margin:0;}' +
+  '.ci-themes{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:8px;}' +
+  '.ci-theme{display:flex;flex-direction:column;align-items:center;gap:4px;background:none;border:2px solid transparent;border-radius:10px;padding:4px;cursor:pointer;font:inherit;font-size:12px;color:inherit;}' +
+  '.ci-theme:hover{background:var(--surface-2);} .ci-theme.on{border-color:var(--ink);font-weight:600;} .ci-theme:disabled{opacity:.5;cursor:not-allowed;}' +
+  '.ci-swatch{width:100%;height:38px;border-radius:8px;border:1px solid var(--line);display:flex;align-items:center;justify-content:flex-end;padding-right:7px;box-sizing:border-box;}' +
+  '.ci-swatch span{width:32px;height:15px;border-radius:8px;display:block;}' +
+  '.ci-list{display:flex;flex-direction:column;gap:2px;} .ci-scroll{max-height:44vh;overflow-y:auto;}' +
+  '.ci-row{display:flex;align-items:center;gap:10px;padding:6px 4px;border-radius:8px;} .ci-row:hover{background:var(--surface-2);}' +
+  '.ci-row-main{flex:1;min-width:0;display:flex;flex-direction:column;} .ci-row-main input{width:100%;}' +
+  '.ci-name{font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.ci-sub{display:block;font-size:12px;color:var(--ink-soft);font-weight:400;}' +
+  '.ci-tag{font-size:11px;color:var(--ink-soft);background:var(--surface-2);border-radius:999px;padding:2px 8px;white-space:nowrap;}' +
+  '.ci-confirm{display:flex;gap:4px;align-items:center;font-size:12.5px;white-space:nowrap;} .ci-pick{cursor:pointer;font-weight:400;}' +
+  '.ci-hist{display:flex;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;font-weight:400;}' +
+  '.ci-hist.on{border-color:var(--accent);background:var(--accent-soft);} .ci-hist input[type=radio]{margin-top:3px;flex:none;}' +
+  '.ci-toggle{display:flex;gap:10px;align-items:flex-start;cursor:pointer;font-weight:400;} .ci-toggle input{margin-top:3px;width:18px;height:18px;flex:none;}' +
+  /* install */
+  '.install-link{background:none;border:0;color:var(--accent);font:inherit;font-size:inherit;cursor:pointer;padding:0;text-decoration:underline;}' +
+  '.inst-step{border:1px solid var(--line);border-radius:10px;padding:10px 12px;font-size:13.5px;} .inst-step > strong{display:block;margin-bottom:2px;}' +
+  '@media (max-width:720px){' +
+    '.status-label{max-width:30vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+    '.site-name-btn{display:none;}' +
+    '.chat-head-tools .btn:not(:first-child){display:none;}' +
+  '}';
+  var s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+})();
+function positionStatusMenu(){
+  var m = document.querySelector('.status-menu');
+  if(!m) return;
+  m.style.left = ''; m.style.right = '';
+  var r = m.getBoundingClientRect();
+  var wrap = m.parentElement.getBoundingClientRect();
+  if(r.left < 8){ m.style.right = 'auto'; m.style.left = (8 - wrap.left) + 'px'; }
+  else if(r.right > window.innerWidth - 8){ m.style.right = (wrap.right - window.innerWidth + 8) + 'px'; }
+}
 
 /* ============================================================
    BOOT
