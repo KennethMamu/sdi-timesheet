@@ -1,5 +1,6 @@
 
 
+
 <meta charset="utf-8">
 <title>SDI Timesheet</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -452,6 +453,7 @@ var POLL_INTERVAL_MS = 7000;
 var pollTimer = null;
 
 function applyBootstrapState(data){
+  if(data && data.siteTexts && typeof data.siteTexts === 'object') STATE.siteTexts = data.siteTexts;
   STATE.orgName = data.orgName;
   STATE.primaryAdmin = data.primaryAdmin;
   STATE.admins = data.admins || [];
@@ -467,6 +469,8 @@ function applyBootstrapState(data){
   STATE.myNotifications = [];
 }
 function applyServerState(data){
+  if(data && data.siteTexts && typeof data.siteTexts === 'object') STATE.siteTexts = data.siteTexts;
+  if(typeof data.chatUnread === 'number') STATE.chatUnread = data.chatUnread;
   STATE.orgName = data.orgName;
   STATE.primaryAdmin = data.primaryAdmin;
   STATE.shifts = data.shifts || STATE.shifts || {};
@@ -868,6 +872,11 @@ var API_ERROR_MESSAGES = {
   photo_too_large: 'That image is too large — try a smaller photo.',
   empty_message: 'Write a message first.',
   shift_in_use: 'Pick a shift to move this shift’s employees to first.',
+  title_required: 'Give it a title.',
+  primary_only: 'Only the primary admin can do that.',
+  text_too_long: 'That’s too long — keep it under 2000 characters.',
+  bad_date: 'That date isn’t valid.',
+  bad_time: 'That time isn’t valid.',
   last_shift: 'You can’t remove the only shift — add another one first.',
   unknown_shift: 'That shift no longer exists — the page will refresh with the latest list.',
   recovery_admin_only: 'Passcode recovery by email is only set up for the primary admin.',
@@ -1739,7 +1748,7 @@ function surnameOf(name){
    ============================================================ */
 var ui = {
   adminTab: 'overview', modal: null, modalData: {}, adminEmpId: null, concernFilter: 'open', overviewShift: 'all',
-  employeeMonth: null, adminMonth: null, peopleSort: '', notifFilter: 'all',
+  employeeMonth: null, adminMonth: null, peopleSort: '', notifFilter: 'all', empView: null, siteTextPencils: false,
   landingSearch: { query: '', selectedId: null, error: null }
 };
 restoreUiState(ui); // see "UI STATE" above — carries tab/employee/month across the save-triggered reload
@@ -1917,6 +1926,7 @@ function render(){
   // the table is redrawn (month change, picking another employee, a
   // tab switch...) — otherwise that last edit would be lost.
   flushEntryAutosaves();
+  chatCaptureBeforeRender();
   if(!DATA_READY){
     app.innerHTML = renderLoadingHTML();
     return;
@@ -1933,6 +1943,7 @@ function render(){
     app.innerHTML = html;
     if(ui.modal) renderModalInto(app);
     wireInputsAfterRender();
+    chatAfterRender();
   }catch(err){
     console.error('SDI Timesheet: render failed', err);
     try{ app.innerHTML = renderFatalErrorHTML('Something went wrong showing this page.'); }catch(e2){ /* give up quietly */ }
@@ -2028,8 +2039,8 @@ function viewLanding(){
     '<div class="stack" style="max-width:440px; width:100%;">' +
       '<div class="stack" style="text-align:center; gap:6px;">' +
         '<span class="eyebrow">' + esc(STATE.orgName) + '</span>' +
-        '<h1 class="section-title" style="font-size:30px;">Who’s checking their timesheet?</h1>' +
-        '<p class="muted" style="margin:0;">Search your name to view your own hours and attendance. Your timesheet is private to you and admins.</p>' +
+        '<h1 class="section-title" style="font-size:30px;">' + siteText('landing.title') + '</h1>' +
+        '<p class="muted" style="margin:0;">' + siteText('landing.intro') + '</p>' +
       '</div>' +
       '<div class="card card-pad stack">' +
         '<label class="field autocomplete" for="landing-emp-search">Your name' +
@@ -2043,8 +2054,8 @@ function viewLanding(){
       '<div class="divider-label">or</div>' +
       '<div class="card card-pad row" style="justify-content:space-between;">' +
         '<div>' +
-          '<div style="font-weight:600;">Manage the timesheet</div>' +
-          '<div class="muted" style="font-size:12.5px;">Edit hours, review concerns, manage people.</div>' +
+          '<div style="font-weight:600;">' + siteText('landing.admin_title') + '</div>' +
+          '<div class="muted" style="font-size:12.5px;">' + siteText('landing.admin_sub') + '</div>' +
         '</div>' +
         '<button class="btn" data-action="go-admin-login">Admin Login</button>' +
       '</div>' +
@@ -2113,7 +2124,7 @@ function viewEmployeeSetup(emp){
       '<div class="stack" style="gap:4px;">' +
         '<span class="eyebrow">First time here</span>' +
         '<h1 class="section-title" style="font-size:24px;">Set up your access</h1>' +
-        '<p class="muted" style="margin:0; font-size:13px;">You’re claiming the profile for <strong>' + esc(formatName(emp.name)) + '</strong>. Choose a passcode — you’ll use it next time to keep your timesheet private to you and admins.</p>' +
+        '<p class="muted" style="margin:0; font-size:13px;">' + siteText('signin.setup', { name: '<strong>' + esc(formatName(emp.name)) + '</strong>' }) + '</p>' +
       '</div>' +
       '<label class="field">Choose a passcode (4+ characters)' +
         pwToggleField('setup-passcode-1', 'new-password') +
@@ -2141,7 +2152,7 @@ function viewEmployeeAuth(emp){
       '<div class="stack" style="gap:4px;">' +
         '<span class="eyebrow">Welcome back</span>' +
         '<h1 class="section-title" style="font-size:24px;">' + esc(formatName(emp.name)) + '</h1>' +
-        '<p class="muted" style="margin:0; font-size:13px;">Enter your passcode to view your timesheet.</p>' +
+        '<p class="muted" style="margin:0; font-size:13px;">' + siteText('signin.unlock') + '</p>' +
       '</div>' +
       '<label class="field">Passcode' +
         pwToggleField('auth-passcode', 'current-password') +
@@ -2151,7 +2162,7 @@ function viewEmployeeAuth(emp){
         '<button class="btn btn-ghost" data-action="go-landing">Not you? Switch</button>' +
         '<button class="btn btn-primary" data-action="employee-auth-submit">Unlock</button>' +
       '</div>' +
-      '<p class="muted" style="margin:0; font-size:11.5px;">Forgot it? Ask an admin to reset your passcode.</p>' +
+      '<p class="muted" style="margin:0; font-size:11.5px;">' + siteText('signin.forgot') + '</p>' +
     '</div>' +
   '</div>';
 }
@@ -2178,7 +2189,7 @@ function viewAdminLogin(){
       '<div class="stack" style="gap:4px;">' +
         '<span class="eyebrow">Restricted</span>' +
         '<h1 class="section-title" style="font-size:24px;">Admin Login</h1>' +
-        '<p class="muted" style="margin:0; font-size:13px;">Only people on the admin list can edit entries, resolve concerns, and manage staff.</p>' +
+        '<p class="muted" style="margin:0; font-size:13px;">' + siteText('signin.admin') + '</p>' +
       '</div>' +
       '<label class="field">Admin name' +
         // autocomplete="off" specifically to opt this <select> out of
@@ -2261,6 +2272,17 @@ function punchCardHTML(emp, monthKey, today){
    VIEW: EMPLOYEE DASHBOARD
    ============================================================ */
 function viewEmployeeDash(emp){
+  if(ui.empView === 'chat' || ui.empView === 'calendar'){
+    return '<div class="stack" style="gap:14px;">' +
+      '<div class="subview-bar">' +
+        '<button class="btn btn-sm" data-action="close-subview">&larr; Back to my timesheet</button>' +
+        '<h1 class="section-title" style="font-size:24px; margin:0;">' + (ui.empView === 'chat' ? 'Messages' : 'Company Calendar') + '</h1>' +
+        '<span style="flex:1;"></span>' +
+        (ui.empView === 'chat' ? '<button class="btn btn-sm btn-ghost" data-action="open-calendar">Calendar</button>' : '<button class="btn btn-sm btn-ghost" data-action="open-messages">Messages' + chatBadgeHTML(chatUnreadTotal()) + '</button>') +
+      '</div>' +
+      (ui.empView === 'chat' ? chatPageHTML() : calendarPageHTML()) +
+    '</div>';
+  }
   var monthKey = empMonth();
   var mi = monthInfo(monthKey);
   var t = monthTotals(emp.id, monthKey);
@@ -2314,6 +2336,8 @@ function viewEmployeeDash(emp){
       '</div>' +
       '<div class="row" style="flex-wrap:wrap; align-items:center;">' +
         notificationsBellHTML() +
+        '<button class="btn btn-sm btn-primary" data-action="open-messages">Messages' + chatBadgeHTML(chatUnreadTotal()) + '</button>' +
+        '<button class="btn btn-sm" data-action="open-calendar">Calendar</button>' +
         '<button class="btn btn-sm" data-action="download-my-timesheet">Download Timesheet</button>' +
         '<button class="btn btn-sm" data-action="download-my-attendance">Download Attendance</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="notify-admin-open">Notify Admin</button>' +
@@ -2347,7 +2371,7 @@ function viewEmployeeDash(emp){
 
     '<div class="card card-pad stack">' +
       '<h2 style="font-size:18px;">My concerns</h2>' +
-      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Flag a day that looks wrong and ' + esc(STATE.primaryAdmin) + ' will review it.</p>' +
+      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">' + siteText('employee.concerns', { primary: esc(STATE.primaryAdmin) }) + '</p>' +
       concernsList +
     '</div>' +
 
@@ -2355,7 +2379,7 @@ function viewEmployeeDash(emp){
 
     '<div class="card card-pad stack">' +
       '<h2 style="font-size:18px;">My requests</h2>' +
-      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Late, absence, sick leave, vacation leave, and document requests you\'ve sent to ' + esc(STATE.primaryAdmin) + '. Vacation leave and document requests both need approval; the rest are just for their records.</p>' +
+      '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">' + siteText('employee.requests', { primary: esc(STATE.primaryAdmin) }) + '</p>' +
       myRequestsList +
     '</div>' +
   '</div>';
@@ -2376,7 +2400,7 @@ function companyFormsCardHTML(){
   }).join('');
   return '<div class="card card-pad stack">' +
     '<h2 style="font-size:18px;">Company Forms</h2>' +
-    '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">Ask ' + esc(STATE.primaryAdmin || 'admin') + ' for a copy — once approved, a download button appears on your request below in "My requests".</p>' +
+    '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">' + siteText('employee.forms', { primary: esc(STATE.primaryAdmin || 'admin') }) + '</p>' +
     '<div class="stack" style="gap:0;">' + rows + '</div>' +
   '</div>';
 }
@@ -2497,12 +2521,16 @@ function viewAdminDash(){
     ['entries','Edit Entries'],
     ['concerns','Concerns', openCount],
     ['notifications','Notifications', unreadCount],
+    ['messages','Messages'],
+    ['calendar','Calendar'],
     ['people','People & Access'],
     ['downloads','Downloads']
   ];
+  if(isPrimaryAdmin()) tabs.push(['sitetext','Website Text']);
+  else if(ui.adminTab === 'sitetext') ui.adminTab = 'overview';
   var tabsHTML = tabs.map(function(t){
     var active = ui.adminTab === t[0] ? ' active' : '';
-    var count = t[2] ? '<span class="count">' + t[2] + '</span>' : '';
+    var count = t[0] === 'messages' ? chatBadgeHTML(chatUnreadTotal()) : (t[2] ? '<span class="count">' + t[2] + '</span>' : '');
     return '<button class="tab' + active + '" data-action="admin-tab" data-tab="' + t[0] + '">' + t[1] + count + '</button>';
   }).join('');
 
@@ -2512,12 +2540,16 @@ function viewAdminDash(){
   else if(ui.adminTab === 'notifications') body = adminNotificationsTab();
   else if(ui.adminTab === 'people') body = adminPeopleTab();
   else if(ui.adminTab === 'downloads') body = adminDownloadsTab();
+  else if(ui.adminTab === 'messages') body = chatPageHTML();
+  else if(ui.adminTab === 'calendar') body = calendarPageHTML();
+  else if(ui.adminTab === 'sitetext') body = siteTextTabHTML();
   else body = adminOverviewTab();
+  var showMonthNav = ui.adminTab !== 'messages' && ui.adminTab !== 'calendar' && ui.adminTab !== 'sitetext';
 
   return '<div class="stack" style="gap:18px;">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
       '<div><span class="eyebrow">Admin</span><h1 class="section-title" style="font-size:26px;">' + esc(STATE.orgName) + '</h1></div>' +
-      monthNavHTML('admin', adminMonth()) +
+      (showMonthNav ? monthNavHTML('admin', adminMonth()) : '') +
     '</div>' +
     '<div class="tabs">' + tabsHTML + '</div>' +
     body +
@@ -2647,7 +2679,7 @@ function adminEntriesTab(){
       adminEmpSearchHTML(emp) +
       '<span id="entries-save-status" class="muted" aria-live="polite" style="font-size:12.5px; margin-bottom:9px;">' + entriesSaveStatusText() + '</span>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Changes save automatically as you edit each day — no Save button needed (watch the status at the top right). Total, Reg and OT hours are calculated automatically — lunch and personal minutes are subtracted from that day\'s hours, same as when an employee enters them themselves before clocking out. A time in past this employee\'s shift\'s required time in (set in People &amp; Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand, and correcting the time to an on-time one switches it back to Present. To excuse a late arrival, just set Status to Present. Type your own number into Min Late only if you want to override the calculation. Use × to clear just a time, or "Clear day" to blank the whole row.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('admin.entries_help') + '</p>' +
     '<div class="table-wrap">' +
       '<table id="entries-editor-table" data-emp="' + esc(emp.id) + '" data-month="' + esc(monthKey) + '">' +
         '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Lunch</th><th>Personal</th><th>Notes</th><th></th></tr></thead>' +
@@ -2809,7 +2841,7 @@ function broadcastComposerHTML(){
   if(!canBroadcastAsMe()) return '';
   return '<div class="card card-pad stack" style="gap:10px;">' +
     '<h2 style="font-size:16px; margin:0;">Send an announcement</h2>' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Goes out to every active employee\'s Announcements list right away — good for company-wide updates or a daily reminder.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('admin.broadcast') + '</p>' +
     '<div class="row" style="gap:10px; align-items:flex-end; flex-wrap:wrap;">' +
       '<label class="field" style="min-width:160px;">Type' +
         '<select id="broadcast-kind"><option value="announcement">New update</option><option value="reminder">Daily reminder</option></select>' +
@@ -2888,7 +2920,7 @@ function adminPeopleTab(){
         '<button class="btn btn-sm btn-ghost" data-action="admin-change-passcode-open">Change My Passcode</button>' +
       '</div>' +
     '</div>' +
-    '<p class="muted" style="margin:0; font-size:12px;">Signed in as <strong>' + esc(session.adminName) + '</strong>' + (isMePrimary ? ' (Primary)' : '') + '. Setting your own passcode here replaces the shared admin password for your own sign-ins from then on — if you forget it, ' + esc(STATE.primaryAdmin || 'the primary admin') + ' can reset it for you below.</p>' +
+    '<p class="muted" style="margin:0; font-size:12px;">Signed in as <strong>' + esc(session.adminName) + '</strong>' + (isMePrimary ? ' (Primary)' : '') + '. ' + siteText('people.my_account', { primary: esc(STATE.primaryAdmin || 'the primary admin') }) + '</p>' +
   '</div>';
 
   var adminRows = STATE.admins.map(function(a){
@@ -2931,7 +2963,7 @@ function adminPeopleTab(){
         '<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Shift</th><th>Passcode</th><th></th><th></th><th></th><th></th><th></th></tr></thead>' +
         '<tbody>' + empRows + '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Each person sets their own passcode the first time they open the app. Reset clears it so they can set a new one — use this if someone forgets theirs. Remove Photo takes off a profile picture that doesn\'t belong — a photo they can add back anytime, but only an admin can take down. Deactivate keeps their full history and blocks them from logging in — they\'ll see a message to email ' + esc(REACTIVATION_EMAIL) + ' for reactivation. Delete is permanent and removes them and all their entries for good.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">' + siteText('people.employees', { email: esc(REACTIVATION_EMAIL) }) + '</p></div>' +
     '</div>' +
     myAdminAccountCard +
     '<div class="card">' +
@@ -2942,7 +2974,7 @@ function adminPeopleTab(){
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
         '<table class="compact"><thead><tr><th>Name</th><th>Email</th><th>Passcode</th><th>Announcements</th><th></th><th></th><th></th><th></th></tr></thead><tbody>' + adminRows + '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Admins sign in with their name plus either their own personal passcode (set from My Admin Account above) or, until they set one, the shared admin password. Only ' + esc(STATE.primaryAdmin || 'the primary admin') + ' can reset another admin\'s passcode, remove their photo, or grant them access to send announcements — everyone manages their own account otherwise. Removing an admin here blocks their login immediately.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">' + siteText('people.admins', { primary: esc(STATE.primaryAdmin || 'the primary admin') }) + '</p></div>' +
     '</div>' +
     '<div class="card">' +
       '<div class="card-pad row" style="justify-content:space-between; padding-bottom:12px;">' +
@@ -2965,7 +2997,7 @@ function adminPeopleTab(){
         }).join('') +
         '</tbody></table>' +
       '</div>' +
-      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Edit a shift to rename it, change its schedule, or change which days it runs — updates everywhere it\'s shown. Add Shift creates a brand-new shift employees can be assigned to. Remove deletes a shift entirely — anyone still on it is moved to another shift you pick first, and their past entries are kept.</p></div>' +
+      '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">' + siteText('people.shifts') + '</p></div>' +
     '</div>' +
   '</div>';
 }
@@ -2978,13 +3010,17 @@ function adminDownloadsTab(){
       '<td><button class="btn btn-sm" data-action="download-emp-attendance" data-id="' + esc(e.id) + '">Attendance</button></td></tr>';
   }).join('');
   return '<div class="stack" style="gap:18px;">' +
-    '<p class="muted" style="margin:0; font-size:12.5px;">Exports use the month shown at the top of the Admin dashboard — currently <strong>' + esc(monthKeyLabel(monthKey)) + '</strong>. All exports below are styled tables — open with Excel or Google Sheets. Timesheet and Attendance Grid match the SDI Timesheet / Attendance Schedule templates; Summary is our own roll-up with no template to match.</p>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('downloads.intro', { month: '<strong>' + esc(monthKeyLabel(monthKey)) + '</strong>' }) + '</p>' +
     '<div class="card card-pad row" style="justify-content:space-between;">' +
-      '<div><div style="font-weight:600;">Company-wide exports</div><div class="muted" style="font-size:12.5px;">Every active employee, one file.</div></div>' +
+      '<div><div style="font-weight:600;">Company-wide exports</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.company') + '</div></div>' +
       '<div class="row"><button class="btn" data-action="download-all-summary">Summary</button><button class="btn" data-action="download-attendance-grid">Attendance Grid</button></div>' +
     '</div>' +
     '<div class="card card-pad row" style="justify-content:space-between;">' +
-      '<div><div style="font-weight:600;">Full data backup</div><div class="muted" style="font-size:12.5px;">Saves everything — every employee, entry, admin, and setting — as one file. Keep a recent one on hand in case data ever needs to be restored.</div></div>' +
+      '<div><div style="font-weight:600;">Chat records</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.chat') + '</div></div>' +
+      '<div class="row"><button class="btn" data-action="chat-report-open">Download chat report</button></div>' +
+    '</div>' +
+    '<div class="card card-pad row" style="justify-content:space-between;">' +
+      '<div><div style="font-weight:600;">Full data backup</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.backup') + '</div></div>' +
       '<div class="row">' +
         '<button class="btn" data-action="export-backup">Export Backup</button>' +
         '<label class="btn btn-ghost" for="restore-backup-input" style="cursor:pointer; margin:0;">Restore from Backup<input type="file" id="restore-backup-input" accept="application/json,.json" style="display:none;"></label>' +
@@ -3006,7 +3042,7 @@ function adminCompanyFormsHTML(){
     return '<tr><td>' + esc(f.label) + '</td><td><button class="btn btn-sm" data-action="download-company-form" data-key="' + esc(f.key) + '">Download PDF</button></td></tr>';
   }).join('');
   return '<div class="card card-pad stack">' +
-    '<div><div style="font-weight:600;">Company form templates</div><div class="muted" style="font-size:12.5px;">Blank Leave Form, Overtime Slip, and the rest — same set employees can download from their own dashboard.</div></div>' +
+    '<div><div style="font-weight:600;">Company form templates</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.forms') + '</div></div>' +
     '<div class="table-wrap"><table><thead><tr><th>Form</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
   '</div>';
 }
@@ -3055,7 +3091,7 @@ function renderModalInto(app){
     var rcfErr = ui.modalData.reqError ? '<p style="color:var(--bad); font-size:13px; margin:0;">' + esc(ui.modalData.reqError) + '</p>' : '';
     html = modalShell('Request: ' + esc(rcfForm ? rcfForm.label : 'Form'),
       '<div class="stack" style="gap:12px;">' +
-        '<p class="muted" style="margin:0; font-size:12.5px;">Sends ' + esc(STATE.primaryAdmin || 'admin') + ' a notification asking for this. Once approved, a Download PDF button will appear on this request under "My requests".</p>' +
+        '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('employee.form_request', { primary: esc(STATE.primaryAdmin || 'admin') }) + '</p>' +
         '<label class="field">Note (optional)<textarea id="rcf-note" placeholder="Any details for ' + esc(STATE.primaryAdmin || 'admin') + '..."></textarea></label>' +
         rcfErr +
       '</div>',
@@ -3133,6 +3169,8 @@ function renderModalInto(app){
           '<label class="field">Position<input type="text" id="edit-emp-position" value="' + esc(editEmp ? (editEmp.position||'') : '') + '"></label>' +
         '</div>' +
         '<label class="field">Shift<select id="edit-emp-shift">' + editShiftOptions + '</select></label>' +
+        '<label class="field">Birthday<input type="date" id="edit-emp-birthday" max="' + calTodayYmd() + '" value="' + esc(editEmp && editEmp.birthday ? editEmp.birthday : '') + '"></label>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Optional. Only the month and day show on the company calendar; a greeting is posted in All Company chat on the day.</p>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-employee-submit">Save</button>'
@@ -3202,7 +3240,7 @@ function renderModalInto(app){
         '<label class="field">Full name <span class="req">*</span><input type="text" id="new-admin-name" placeholder="First Last"></label>' +
         '<label class="field">Email<input type="email" id="new-admin-email" placeholder="name@example.com"></label>' +
       '</div>' +
-      '<p class="muted" style="font-size:12px; margin:10px 0 0;">They’ll sign in with this name and the shared admin password. Email is optional, just for contact purposes.</p>',
+      '<p class="muted" style="font-size:12px; margin:10px 0 0;">' + siteText('people.add_admin') + '</p>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="add-admin-submit">Add Admin</button>'
     );
@@ -3284,6 +3322,15 @@ function renderModalInto(app){
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-danger" data-action="confirm-remove-photo-submit">Remove Photo</button>'
     );
+  } else if(ui.modal && ui.modal.indexOf('chat') === 0){
+    html = chatModalHTML();
+    if(!html){ ui.modal = null; return; }
+  } else if(ui.modal && ui.modal.indexOf('cal') === 0){
+    html = calModalHTML();
+    if(!html){ ui.modal = null; return; }
+  } else if(ui.modal === 'siteTextEdit'){
+    html = siteTextModalHTML();
+    if(!html){ ui.modal = null; return; }
   } else {
     return;
   }
@@ -3303,6 +3350,9 @@ function modalShell(title, body, foot){
 }
 
 function wireInputsAfterRender(){
+  chatWireAfterRender();
+  calWireAfterRender();
+  siteTextWireAfterRender();
   var entriesTable = $('entries-editor-table');
   if(entriesTable){
     // 'change' covers selects, time pickers and a number/text field being
@@ -3541,6 +3591,8 @@ function wireEnterSubmit(ids, action){
 function wireModalEnterSubmit(){
   var modalEl = document.querySelector('.modal');
   if(!modalEl) return;
+  // Chat/calendar modals wire their own keys (their first button isn't the "submit").
+  if(ui.modal && (ui.modal.indexOf('chat') === 0 || ui.modal.indexOf('cal') === 0)) return;
   var primaryBtn = modalEl.querySelector('[data-action]:not([data-action="close-modal"])');
   if(!primaryBtn) return;
   var action = primaryBtn.getAttribute('data-action');
@@ -4163,12 +4215,14 @@ var handlers = {
     var dept = (($('edit-emp-dept')||{}).value || '').trim() || null;
     var position = (($('edit-emp-position')||{}).value || '').trim() || null;
     var shift = ($('edit-emp-shift')||{}).value || null;
+    var birthday = ($('edit-emp-birthday')||{}).value || null;
+    if(birthday && birthday > calTodayYmd()){ toast('That birthday is in the future.', 'error'); return; }
     ui.modal = null;
-    apiPersist('edit-employee', { token: session.token, employeeId: id, name: name, email: email, department: dept, position: position, shift: shift },
+    apiPersist('edit-employee', { token: session.token, employeeId: id, name: name, email: email, department: dept, position: position, shift: shift, birthday: birthday },
       function(s){
         var e = s.employees.filter(function(x){ return x.id === id; })[0];
         if(e){
-          e.name = name; e.email = email; e.department = dept; e.position = position;
+          e.name = name; e.email = email; e.department = dept; e.position = position; e.birthday = birthday;
           if(shift){ e.shift = shift; e.shiftLabel = shiftScheduleLabel(shift); }
         }
       },
@@ -4345,6 +4399,2053 @@ document.addEventListener('click', function(e){
   var fn = handlers[el.dataset.action];
   if(fn) fn(el, e);
 });
+
+
+/* ============================================================
+   TEAM CHAT (v43)
+   ------------------------------------------------------------
+   Teams/Messenger-style messaging on the same Supabase backend:
+   direct messages between anyone, an "All Company" chat, and
+   admin-managed group chats (optionally tied to a shift, so
+   everyone on that shift is in it automatically). Reactions,
+   emoji, GIFs, photos/videos/files (straight from the phone's
+   gallery), links, edit and delete.
+
+   Everything is server-side and keeps itself current on its own:
+   while a chat is open it checks for new/edited/deleted messages
+   and reactions every 3 seconds, the chat list refreshes every
+   10 seconds, and the existing ~7s get-state poll carries the
+   total unread count so the Messages badge updates everywhere.
+
+   Record keeping: people can edit and delete their own messages,
+   but the server keeps every earlier version and the text of
+   deleted messages. Admins download the complete record (DMs
+   included) as a PDF from Downloads → Chat records, or from the
+   chat header.
+   ============================================================ */
+var CHAT_MSG_POLL_MS = 3000;
+var CHAT_LIST_POLL_MS = 10000;
+var CHAT_MAX_FILE_BYTES = 50 * 1024 * 1024;
+var CHAT_MAX_PENDING = 10;
+var CHAT_IMAGE_MAX_DIM = 1600;
+var CHAT_BLOCKED_EXT = /\.(exe|bat|cmd|com|msi|scr|ps1|vbs|vbe|js|jse|wsf|jar|sh|app|dll|lnk|reg|hta|cpl)$/i;
+var CHAT_QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+var CHAT_EMOJI_SETS = [
+  ['Smileys', '😀 😃 😄 😁 😆 😅 🤣 😂 🙂 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 🤗 🤭 🤔 🤐 😐 😑 😶 😏 😒 🙄 😬 😌 😔 😪 😴 😷 🤒 🥵 🥶 😵 🤯 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠'],
+  ['Gestures', '👍 👎 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 👏 🙌 👐 🤲 🤝 🙏 💪 🫡 🫶'],
+  ['Hearts', '❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝'],
+  ['Celebrate', '🎉 🎊 🎂 🍰 🎁 🎈 🎄 🎆 🎇 ✨ 🏆 🥇 🏅 🎖️ ⭐ 🌟 🔥 💯 ✅ ☑️'],
+  ['Work', '💼 🏗️ 📐 📏 🛠️ 🔧 🔩 ⚙️ 🧱 🖥️ 💻 ⌨️ 🖱️ 🖨️ 📁 📂 📄 📝 📌 📎 📊 📈 📅 ⏰ ⏳ ☕ 📞 ✉️ 📦'],
+  ['Food', '🍵 🥤 🍕 🍔 🍟 🌭 🍜 🍝 🍣 🍱 🍛 🍚 🍗 🥗 🍩 🍪 🍫 🍦 🍎 🍌 🍉 🥭'],
+  ['Nature', '☀️ 🌤️ ⛅ 🌧️ ⛈️ 🌈 🌙 🌊 🌴 🌸 🌻 🍀 🐶 🐱 🐰 🐻 🐼 🐔 🐟 🦋']
+];
+
+var chat = null;
+function chatReset(){
+  if(chat && chat.pending){
+    Object.keys(chat.pending).forEach(function(k){ (chat.pending[k] || []).forEach(function(p){ if(p.previewUrl){ try{ URL.revokeObjectURL(p.previewUrl); }catch(e){} } }); });
+  }
+  chat = {
+    token: session.token || null,
+    list: null, directory: [], me: null, listError: null,
+    activeId: null, messages: {}, cursors: {}, hasMore: {}, loadingMsgs: {},
+    drafts: {}, pending: {}, editingId: null, sending: false, reactFor: null, panel: null,
+    gif: { q: '', results: null, loading: false, error: null },
+    lastListAt: 0, lastMsgAt: 0, busyMsgs: false, busyList: false, search: '', scroll: null
+  };
+}
+chatReset();
+
+/* ---------- helpers ---------- */
+function chatIsOpen(){
+  if(!session.token) return false;
+  if(session.role === 'admin') return ui.adminTab === 'messages';
+  if(session.role === 'employee') return ui.empView === 'chat';
+  return false;
+}
+function chatEnsureSession(){ if(chat.token !== (session.token || null)) chatReset(); }
+function chatPerson(key){
+  for(var i = 0; i < chat.directory.length; i++){ if(chat.directory[i].key === key) return chat.directory[i]; }
+  return null;
+}
+function chatDisplayName(name, key){
+  if(key === 'bot') return name || 'SDI Bot';
+  if(key && key.indexOf('a:') === 0) return name || key.slice(2);
+  return name ? formatName(name) : 'Former employee';
+}
+function chatPersonNameFrom(dir, key){
+  for(var i = 0; i < (dir || []).length; i++){ if(dir[i].key === key) return chatDisplayName(dir[i].name, key); }
+  if(key === 'bot') return 'SDI Bot';
+  return key && key.indexOf('a:') === 0 ? key.slice(2) : 'Former employee';
+}
+function chatPersonName(key){ return chatPersonNameFrom(chat.directory, key); }
+function chatConv(id){
+  var l = chat.list || [];
+  for(var i = 0; i < l.length; i++){ if(l[i].id === id) return l[i]; }
+  return null;
+}
+function chatOtherKey(c){ return (c.members || []).filter(function(k){ return !chat.me || k !== chat.me.key; })[0]; }
+function chatTitle(c){
+  if(!c) return '';
+  if(c.kind === 'company') return c.name || 'All Company';
+  if(c.kind === 'group') return c.name || 'Group';
+  var other = chatOtherKey(c);
+  return other ? chatPersonName(other) : 'Direct message';
+}
+function chatSubtitle(c){
+  if(!c) return '';
+  if(c.kind === 'company') return 'Everyone at ' + (STATE.orgName || 'SDI');
+  if(c.kind === 'dm'){
+    var p = chatPerson(chatOtherKey(c));
+    return p ? (p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) + ' shift' : 'Employee')) : 'Direct message';
+  }
+  var n = (c.members || []).length;
+  return (c.shiftCode ? 'Everyone on ' + shiftName(c.shiftCode) + ' shift · ' : '') + n + ' member' + (n === 1 ? '' : 's');
+}
+function chatInitials(name){
+  return String(name || '?').replace(/,/g, ' ').trim().split(/\s+/).map(function(w){ return w.charAt(0); }).filter(Boolean).slice(0, 2).join('').toUpperCase() || '?';
+}
+function chatAvatarHTML(c){
+  var inner, bg = 'var(--accent-soft)', fg = 'var(--accent)';
+  if(c.kind === 'company'){ inner = '&#9733;'; bg = 'var(--ink)'; fg = '#fff'; }
+  else if(c.kind === 'group'){ inner = '#'; bg = 'var(--good-soft)'; fg = 'var(--good)'; }
+  else inner = esc(chatInitials(chatTitle(c)));
+  return '<span class="chat-av" style="background:' + bg + '; color:' + fg + ';">' + inner + '</span>';
+}
+function chatClock(iso){ var d = new Date(iso); return fmtTime12(pad2(d.getHours()) + ':' + pad2(d.getMinutes())); }
+function chatTimeShort(iso){
+  if(!iso) return '';
+  var d = new Date(iso), now = new Date();
+  if(d.toDateString() === now.toDateString()) return chatClock(iso);
+  var y = new Date(now); y.setDate(now.getDate() - 1);
+  if(d.toDateString() === y.toDateString()) return 'Yesterday';
+  return MONTH_NAMES[d.getMonth()].slice(0, 3) + ' ' + d.getDate();
+}
+function chatDayLabel(iso){
+  var d = new Date(iso), now = new Date();
+  if(d.toDateString() === now.toDateString()) return 'Today';
+  var y = new Date(now); y.setDate(now.getDate() - 1);
+  if(d.toDateString() === y.toDateString()) return 'Yesterday';
+  return WEEKDAY_LONG[d.getDay()] + ', ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getDate() + (d.getFullYear() !== now.getFullYear() ? ', ' + d.getFullYear() : '');
+}
+function chatFullStamp(iso){
+  if(!iso) return '';
+  var d = new Date(iso);
+  return MONTH_NAMES[d.getMonth()].slice(0, 3) + ' ' + d.getDate() + ', ' + d.getFullYear() + ' ' + chatClock(iso);
+}
+function chatBytes(n){
+  if(!n && n !== 0) return '';
+  if(n < 1024) return n + ' B';
+  if(n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+function chatFormatBody(text){
+  var safe = esc(text || '');
+  safe = safe.replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, function(u){
+    return '<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + u + '</a>';
+  });
+  // A message that's only emoji shows them big, like Messenger/Teams.
+  var only = (text || '').replace(/\s/g, '');
+  var bigEmoji = only && only.length <= 12 && !/[A-Za-z0-9]/.test(only) && /\p{Extended_Pictographic}/u.test(only);
+  return bigEmoji ? '<span class="chat-big-emoji">' + safe + '</span>' : safe.replace(/\n/g, '<br>');
+}
+function chatUnreadTotal(){
+  if(chat.list && chatIsOpen()){
+    return chat.list.reduce(function(n, c){ return n + (c.id === chat.activeId && chatIsOpen() ? 0 : (c.unread || 0)); }, 0);
+  }
+  return STATE.chatUnread || 0;
+}
+function chatBadgeHTML(n){
+  return '<span class="chat-unread-badge"' + (n ? '' : ' hidden') + '>' + (n > 99 ? '99+' : (n || '')) + '</span>';
+}
+function chatUpdateBadges(){
+  var n = chatUnreadTotal();
+  document.querySelectorAll('.chat-unread-badge').forEach(function(el){
+    el.textContent = n ? (n > 99 ? '99+' : String(n)) : '';
+    if(n) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
+  });
+  try{ document.title = (n ? '(' + n + ') ' : '') + 'SDI Timesheet'; }catch(e){}
+}
+function chatApiError(err){
+  var map = {
+    empty_message: 'Type a message or attach a file first.',
+    message_too_long: 'That message is too long (4,000 characters max).',
+    attachment_too_large: 'That file is too large — 50 MB max.',
+    file_type_not_allowed: 'That type of file can’t be sent (programs and scripts are blocked).',
+    invalid_attachment: 'That file couldn’t be sent — try attaching it again.',
+    upload_missing: 'The file didn’t finish uploading — try again.',
+    upload_failed: 'The file upload failed — check your connection and try again.',
+    upload_unavailable: 'File uploads aren’t available right now — try again shortly.',
+    invalid_gif: 'That GIF can’t be sent.',
+    gif_not_configured: 'GIF search isn’t switched on yet.',
+    gif_search_failed: 'GIF search isn’t responding — try again in a moment.',
+    not_your_message: 'You can only change your own messages.',
+    message_deleted: 'That message was already deleted.',
+    not_found: 'That chat or message isn’t available anymore.',
+    unknown_person: 'That person isn’t available to message.',
+    name_required: 'Give the group a name.',
+    unknown_shift: 'That shift doesn’t exist anymore.',
+    chat_frozen: 'An admin has frozen this chat — it’s read-only for now.'
+  };
+  return map[err && err.code] || apiErrorMessage(err);
+}
+function chatStorageUrl(rel){ return rel ? SUPABASE_URL + '/storage/v1' + rel : null; }
+function chatIsImageMime(m){ return /^image\/(png|jpe?g|gif|webp|bmp)$/i.test(m || ''); }
+function chatIsVideoMime(m){ return /^video\/(mp4|webm|quicktime|x-m4v|ogg)$/i.test(m || ''); }
+function chatExtLabel(name){ return esc(((String(name || '').split('.').pop() || 'file').slice(0, 4)).toUpperCase()); }
+
+/* ---------- data loading ---------- */
+function chatLoadList(force){
+  chatEnsureSession();
+  if(chat.busyList && !force) return Promise.resolve();
+  chat.busyList = true;
+  return callApi('chat-list', { token: session.token }).then(function(data){
+    chat.busyList = false;
+    chat.listError = null;
+    chat.lastListAt = Date.now();
+    chat.me = data.me;
+    chat.directory = data.directory || [];
+    chat.list = data.conversations || [];
+    if(chat.activeId){
+      var a = chatConv(chat.activeId);
+      if(!a){ chat.activeId = null; chat.editingId = null; if(chatIsOpen()){ toast('That chat was removed by an admin.', 'error'); render(); } }
+      else {
+        if(chatIsOpen()) a.unread = 0;
+        if(chat.lastFrozen !== undefined && chat.lastFrozen !== !!a.frozen && chatIsOpen()){ chat.lastFrozen = !!a.frozen; render(); }
+        chat.lastFrozen = !!a.frozen;
+      }
+    }
+    STATE.chatUnread = chatUnreadTotal();
+    chatRefreshSide();
+    chatUpdateBadges();
+  }).catch(function(err){
+    chat.busyList = false;
+    chat.lastListAt = Date.now();
+    chat.listError = chatApiError(err);
+    chatRefreshSide();
+  });
+}
+function chatMergeMessages(convId, incoming){
+  var arr = chat.messages[convId] || [];
+  var byId = {};
+  arr.forEach(function(m, i){ byId[m.id] = i; });
+  var changed = false;
+  incoming.forEach(function(m){
+    if(byId.hasOwnProperty(m.id)){
+      var cur = arr[byId[m.id]];
+      if(cur.updatedAt !== m.updatedAt || cur.deleted !== m.deleted || cur.body !== m.body || JSON.stringify(cur.reactions) !== JSON.stringify(m.reactions)){ arr[byId[m.id]] = m; changed = true; }
+    } else { arr.push(m); byId[m.id] = arr.length - 1; changed = true; }
+  });
+  arr.sort(function(a, b){ return a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : (a.id < b.id ? -1 : 1); });
+  chat.messages[convId] = arr;
+  return changed;
+}
+function chatLoadMessages(convId){
+  if(chat.loadingMsgs[convId]) return;
+  chat.loadingMsgs[convId] = true;
+  callApi('chat-messages', { token: session.token, conversationId: convId, markRead: true }).then(function(data){
+    chat.loadingMsgs[convId] = false;
+    chat.messages[convId] = [];
+    chatMergeMessages(convId, data.messages || []);
+    chat.cursors[convId] = data.cursor;
+    chat.hasMore[convId] = !!data.hasMore;
+    var c = chatConv(convId); if(c) c.unread = 0;
+    chatUpdateBadges();
+    if(chat.activeId === convId){ chatRefreshMessages(true); chatRefreshSide(); }
+  }).catch(function(err){
+    chat.loadingMsgs[convId] = false;
+    if(chat.activeId === convId){
+      var box = $('chat-msgs');
+      if(box) box.innerHTML = '<p class="empty">' + esc(chatApiError(err)) + '</p>';
+    }
+  });
+}
+function chatLoadOlder(){
+  var convId = chat.activeId;
+  var arr = chat.messages[convId] || [];
+  if(!arr.length || chat.loadingMsgs[convId]) return;
+  chat.loadingMsgs[convId] = true;
+  var box = $('chat-msgs');
+  var prevHeight = box ? box.scrollHeight : 0, prevTop = box ? box.scrollTop : 0;
+  callApi('chat-messages', { token: session.token, conversationId: convId, before: arr[0].createdAt }).then(function(data){
+    chat.loadingMsgs[convId] = false;
+    chatMergeMessages(convId, data.messages || []);
+    chat.hasMore[convId] = !!data.hasMore;
+    if(chat.activeId === convId){
+      chatRefreshMessages(false, true);
+      var b = $('chat-msgs');
+      if(b) b.scrollTop = b.scrollHeight - prevHeight + prevTop;
+    }
+  }).catch(function(err){ chat.loadingMsgs[convId] = false; toast(chatApiError(err), 'error'); });
+}
+function chatPollActive(){
+  var convId = chat.activeId;
+  if(!convId || !chat.cursors[convId] || chat.busyMsgs) return;
+  chat.busyMsgs = true;
+  callApi('chat-messages', { token: session.token, conversationId: convId, since: chat.cursors[convId], markRead: !document.hidden }).then(function(data){
+    chat.busyMsgs = false;
+    chat.lastMsgAt = Date.now();
+    if(data.cursor) chat.cursors[convId] = data.cursor;
+    if(chatMergeMessages(convId, data.messages || []) && chat.activeId === convId) chatRefreshMessages(false);
+  }).catch(function(err){
+    chat.busyMsgs = false;
+    chat.lastMsgAt = Date.now();
+    if(err && err.code === 'not_found' && chat.activeId === convId){
+      toast('That chat isn’t available anymore.', 'error');
+      chat.activeId = null; chatLoadList(true); render();
+    }
+  });
+}
+/* One heartbeat drives everything; it only does work while a chat page
+   is on screen and someone is logged in. */
+setInterval(function(){
+  if(!session.token || !DATA_READY) return;
+  chatEnsureSession();
+  if(!chatIsOpen()) return;
+  var now = Date.now();
+  if(now - chat.lastListAt >= CHAT_LIST_POLL_MS) chatLoadList();
+  if(chat.activeId && now - chat.lastMsgAt >= CHAT_MSG_POLL_MS - 200) chatPollActive();
+}, 1000);
+
+/* ---------- files ----------
+   Files never pass through the API: the browser asks for a one-time
+   signed upload link, PUTs the file straight into the private Storage
+   bucket (with a progress bar), then posts the message. Viewing uses the
+   signed links the API includes with each message. */
+function chatGuessMime(name, type){
+  if(type) return type;
+  var ext = String(name || '').split('.').pop().toLowerCase();
+  var map = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', heic: 'image/heic',
+    mp4: 'video/mp4', mov: 'video/quicktime', m4v: 'video/x-m4v', webm: 'video/webm', pdf: 'application/pdf',
+    doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    txt: 'text/plain', csv: 'text/csv', zip: 'application/zip' };
+  return map[ext] || 'application/octet-stream';
+}
+/* Big photos are scaled to 1600px JPEG (fast to send, still sharp); GIFs,
+   videos and documents are sent exactly as they are. */
+function chatPrepareFile(file, cb){
+  var name = file.name || ('pasted-image-' + Date.now() + '.png');
+  if(CHAT_BLOCKED_EXT.test(name)){ cb(null, name + ': that type of file can’t be sent (programs and scripts are blocked).'); return; }
+  var mime = chatGuessMime(name, file.type);
+  var finish = function(blob, outName, outMime){
+    if(blob.size > CHAT_MAX_FILE_BYTES){ cb(null, outName + ' is too large — 50 MB max.'); return; }
+    var item = { blob: blob, name: outName, mime: outMime, size: blob.size };
+    if(chatIsImageMime(outMime) || chatIsVideoMime(outMime)){ try{ item.previewUrl = URL.createObjectURL(blob); }catch(e){} }
+    cb(item);
+  };
+  if(!(/^image\/(png|jpe?g|webp|bmp)$/i.test(mime) && file.size > 350 * 1024)){ finish(file, name, mime); return; }
+  var url = URL.createObjectURL(file);
+  var img = new Image();
+  img.onerror = function(){ URL.revokeObjectURL(url); finish(file, name, mime); };
+  img.onload = function(){
+    URL.revokeObjectURL(url);
+    var scale = Math.min(1, CHAT_IMAGE_MAX_DIM / Math.max(img.width, img.height));
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(img.width * scale)); canvas.height = Math.max(1, Math.round(img.height * scale));
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(function(blob){
+      if(!blob || blob.size >= file.size){ finish(file, name, mime); return; }
+      finish(blob, name.replace(/\.[^.]+$/, '') + '.jpg', 'image/jpeg');
+    }, 'image/jpeg', 0.86);
+  };
+  img.src = url;
+}
+function chatAddFiles(files){
+  var convId = chat.activeId;
+  if(!convId || !files || !files.length) return;
+  var list = chat.pending[convId] = chat.pending[convId] || [];
+  var room = CHAT_MAX_PENDING - list.length;
+  if(room <= 0){ toast('Up to ' + CHAT_MAX_PENDING + ' files at a time.', 'error'); return; }
+  var arr = Array.prototype.slice.call(files, 0, room);
+  if(files.length > room) toast('Only ' + room + ' more file' + (room === 1 ? '' : 's') + ' added (' + CHAT_MAX_PENDING + ' at a time).', 'error');
+  var left = arr.length;
+  var ready = new Array(arr.length);
+  var inp = $('chat-input'); if(inp) chat.drafts[convId] = inp.value;
+  // Photos are resized asynchronously, so collect results by position and
+  // queue them in the order they were picked (the caption goes with the
+  // first one, and they send in that order).
+  arr.forEach(function(f, idx){
+    chatPrepareFile(f, function(item, err){
+      if(err) toast(err, 'error'); else ready[idx] = item;
+      if(--left === 0){
+        ready.forEach(function(it){ if(it) list.push(it); });
+        render(); var i2 = $('chat-input'); if(i2) i2.focus();
+      }
+    });
+  });
+}
+function chatUploadBlob(uploadPath, blob, onProgress){
+  return new Promise(function(resolve, reject){
+    var xhr = new XMLHttpRequest();
+    xhr.open('PUT', SUPABASE_URL + '/storage/v1' + uploadPath);
+    xhr.setRequestHeader('apikey', SUPABASE_ANON_KEY);
+    xhr.setRequestHeader('Authorization', 'Bearer ' + SUPABASE_ANON_KEY);
+    xhr.setRequestHeader('x-upsert', 'false');
+    // Raw file body (Storage's binary upload path, same one storage-js uses
+    // for non-form bodies): the object is stored with its real file type.
+    xhr.setRequestHeader('content-type', blob.type || 'application/octet-stream');
+    xhr.setRequestHeader('cache-control', 'max-age=3600');
+    xhr.upload.onprogress = function(e){ if(e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = function(){ if(xhr.status >= 200 && xhr.status < 300) resolve(); else reject({ code: 'upload_failed', status: xhr.status }); };
+    xhr.onerror = function(){ reject({ code: 'upload_failed' }); };
+    xhr.send(blob);
+  });
+}
+function chatOpenDownload(attId){
+  callApi('chat-attachment-url', { token: session.token, attachmentId: attId, download: true }).then(function(d){
+    var a = document.createElement('a');
+    a.href = chatStorageUrl(d.url);
+    a.rel = 'noopener';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    toast('Downloading ' + d.name, 'success');
+  }).catch(function(err){ toast(chatApiError(err), 'error'); });
+}
+
+/* ---------- rendering ---------- */
+function chatListItemsHTML(){
+  if(chat.listError && !chat.list) return '<p class="empty" style="padding:16px;">' + esc(chat.listError) + '</p>';
+  if(!chat.list) return '<p class="empty" style="padding:16px;">Loading chats…</p>';
+  var q = (chat.search || '').trim().toLowerCase();
+  var items = chat.list.filter(function(c){ return !q || chatTitle(c).toLowerCase().indexOf(q) !== -1; });
+  if(!items.length) return '<p class="empty" style="padding:16px;">' + (q ? 'No chats match.' : 'No chats yet.') + '</p>';
+  return items.map(function(c){
+    var unread = c.id === chat.activeId ? 0 : (c.unread || 0);
+    var who = c.lastSenderName && c.kind !== 'dm' ? chatDisplayName(c.lastSenderName, c.lastSenderName === 'SDI Bot' ? 'bot' : null).split(',')[0] + ': ' : '';
+    var preview = c.lastPreview ? who + c.lastPreview : (c.kind === 'company' ? 'Say hello to everyone' : 'No messages yet');
+    return '<button type="button" class="chat-item' + (c.id === chat.activeId ? ' active' : '') + (unread ? ' unread' : '') + '" data-action="chat-open" data-id="' + esc(c.id) + '">' +
+      chatAvatarHTML(c) +
+      '<span class="chat-item-main">' +
+        '<span class="chat-item-top"><span class="chat-item-title">' + (c.frozen ? '<span title="Frozen by an admin" style="color:#2A6F97;">&#10052;</span> ' : '') + esc(chatTitle(c)) + '</span><span class="chat-item-time">' + esc(chatTimeShort(c.lastMessageAt)) + '</span></span>' +
+        '<span class="chat-item-bottom"><span class="chat-item-preview">' + esc(preview) + '</span>' + (unread ? '<span class="chat-item-count">' + unread + '</span>' : '') + '</span>' +
+      '</span>' +
+    '</button>';
+  }).join('');
+}
+function chatReactionsHTML(m){
+  if(!m.reactions || !m.reactions.length || m.deleted) return '';
+  return '<div class="chat-reacts">' + m.reactions.map(function(r){
+    var who = (r.names || []).map(function(n){ return chatDisplayName(n, null); }).join(', ');
+    return '<button type="button" class="chat-react-chip' + (r.mine ? ' mine' : '') + '" data-action="chat-react" data-id="' + esc(m.id) + '" data-emoji="' + esc(r.emoji) + '" title="' + esc(who) + '">' + esc(r.emoji) + ' <span>' + r.count + '</span></button>';
+  }).join('') + '</div>';
+}
+function chatAttachmentHTML(m){
+  var a = m.attachment;
+  if(!a) return '';
+  var url = m.pending ? a.localUrl : chatStorageUrl(a.url);
+  if(chatIsImageMime(a.mime) && url){
+    return '<button type="button" class="chat-img-btn" data-action="chat-view-image" data-id="' + esc(m.id) + '" title="View ' + esc(a.name) + '"><img class="chat-img" src="' + esc(url) + '" alt="' + esc(a.name) + '" loading="lazy"></button>';
+  }
+  if(chatIsVideoMime(a.mime) && url){
+    return '<video class="chat-video" src="' + esc(url) + '" controls preload="metadata" playsinline></video>' +
+      (m.pending ? '' : '<button type="button" class="chat-link-btn" data-action="chat-download-att" data-att="' + esc(a.id) + '">Download video (' + esc(chatBytes(a.size)) + ')</button>');
+  }
+  return '<button type="button" class="chat-file" data-action="chat-download-att" data-att="' + esc(a.id) + '"' + (m.pending ? ' disabled' : '') + '>' +
+    '<span class="chat-file-icon">' + chatExtLabel(a.name) + '</span>' +
+    '<span><span class="chat-file-name">' + esc(a.name) + '</span><span class="chat-file-size">' + esc(chatBytes(a.size)) + (m.pending ? '' : ' · Download') + '</span></span></button>';
+}
+function chatMessageHTML(m, prev, isAdmin){
+  var sameAuthor = prev && prev.senderKey === m.senderKey && !prev.deleted && (Date.parse(m.createdAt) - Date.parse(prev.createdAt) < 5 * 60 * 1000);
+  var mine = m.mine, isBot = m.senderKey === 'bot';
+  var name = chatDisplayName(m.senderName, m.senderKey);
+  var head = sameAuthor ? '' : '<div class="chat-meta">' + (mine ? '' : '<strong>' + esc(name) + '</strong> ') + '<span>' + esc(chatClock(m.createdAt)) + '</span></div>';
+  var bodyHTML;
+  if(m.deleted){
+    bodyHTML = '<div class="chat-bubble deleted"><em>This message was deleted' + (m.deletedBy && m.deletedBy !== m.senderName ? ' by an admin' : '') + '.</em></div>';
+  } else if(chat.editingId === m.id){
+    bodyHTML = '<div class="chat-bubble editing">' +
+      '<textarea id="chat-edit-input" rows="3" maxlength="4000">' + esc(m.body || '') + '</textarea>' +
+      '<div class="row" style="gap:6px; justify-content:flex-end; margin-top:6px;">' +
+        '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-edit-cancel">Cancel</button>' +
+        '<button type="button" class="btn btn-sm btn-primary" data-action="chat-edit-save" data-id="' + esc(m.id) + '">Save</button>' +
+      '</div></div>';
+  } else {
+    var text = m.body ? '<div class="chat-text">' + chatFormatBody(m.body) + '</div>' : '';
+    var gif = m.gif ? '<img class="chat-gif" src="' + esc(m.gif.url) + '" alt="' + esc(m.gif.title || 'GIF') + '" loading="lazy">' : '';
+    var progress = m.pending && typeof m.progress === 'number' ? '<div class="chat-progress"><span style="width:' + Math.round(m.progress * 100) + '%"></span></div><div class="chat-progress-label">Uploading… ' + Math.round(m.progress * 100) + '%</div>' : '';
+    bodyHTML = '<div class="chat-bubble' + (m.pending ? ' pending' : '') + (isBot ? ' bot' : '') + (m.gif && !m.body ? ' media' : '') + '">' + text + gif + chatAttachmentHTML(m) + progress +
+      (m.editedAt ? '<span class="chat-edited">(edited)</span>' : '') + '</div>';
+  }
+  var actions = '';
+  var convFrozen = (function(){ var c = chatConv(m.conversationId); return !!(c && c.frozen); })();
+  if(!m.deleted && !m.pending && chat.editingId !== m.id && !(convFrozen && !isAdmin)){
+    var a = ['<button type="button" data-action="chat-react-open" data-id="' + esc(m.id) + '" title="React" aria-label="React">&#9786;</button>'];
+    if(mine && !isBot) a.push('<button type="button" data-action="chat-edit-start" data-id="' + esc(m.id) + '" title="Edit">Edit</button>');
+    if(mine || isAdmin) a.push('<button type="button" data-action="chat-delete-open" data-id="' + esc(m.id) + '" title="Delete">Delete</button>');
+    actions = '<div class="chat-actions">' + a.join('') + '</div>';
+  }
+  var reactBar = chat.reactFor === m.id ? '<div class="chat-react-bar">' +
+      CHAT_QUICK_REACTIONS.map(function(e){ return '<button type="button" data-action="chat-react" data-id="' + esc(m.id) + '" data-emoji="' + e + '">' + e + '</button>'; }).join('') +
+      '<button type="button" data-action="chat-react-more" data-id="' + esc(m.id) + '" title="More reactions">+</button>' +
+    '</div>' : '';
+  var avatar = mine ? '' : (sameAuthor ? '<span class="chat-av-sm spacer"></span>' : '<span class="chat-av-sm' + (isBot ? ' bot' : '') + '">' + (isBot ? '&#127881;' : esc(chatInitials(name))) + '</span>');
+  return '<div class="chat-msg' + (mine ? ' mine' : '') + (sameAuthor ? ' cont' : '') + '" data-msg-id="' + esc(m.id) + '">' + avatar +
+    '<div class="chat-msg-col">' + head +
+      '<div class="chat-bubble-row">' + (mine ? actions : '') + bodyHTML + (mine ? '' : actions) + '</div>' +
+      reactBar + chatReactionsHTML(m) +
+    '</div></div>';
+}
+function chatMessagesHTML(convId){
+  var arr = chat.messages[convId];
+  if(!arr) return '<p class="empty">Loading messages…</p>';
+  var isAdmin = session.role === 'admin';
+  var out = chat.hasMore[convId] ? '<div style="text-align:center; margin:6px 0 12px;"><button type="button" class="btn btn-sm btn-ghost" data-action="chat-load-older">Load earlier messages</button></div>' : '';
+  if(!arr.length) return out + '<p class="empty">No messages yet — say hello! &#128075;</p>';
+  var lastDay = '';
+  arr.forEach(function(m, i){
+    var day = new Date(m.createdAt).toDateString();
+    if(day !== lastDay){ out += '<div class="chat-day"><span>' + esc(chatDayLabel(m.createdAt)) + '</span></div>'; lastDay = day; }
+    var prev = i > 0 && new Date(arr[i - 1].createdAt).toDateString() === day ? arr[i - 1] : null;
+    out += chatMessageHTML(m, prev, isAdmin);
+  });
+  return out;
+}
+function chatPanelHTML(){
+  if(chat.panel === 'emoji' || chat.panel === 'react-more'){
+    return '<div class="chat-panel" id="chat-panel">' +
+      '<div class="chat-panel-head"><strong>' + (chat.panel === 'emoji' ? 'Emoji' : 'Pick a reaction') + '</strong><button type="button" class="btn btn-sm btn-ghost" data-action="chat-panel-close">&times;</button></div>' +
+      '<div class="chat-emoji-grid">' + CHAT_EMOJI_SETS.map(function(set){
+        return '<div class="chat-emoji-cat">' + esc(set[0]) + '</div>' + set[1].split(' ').map(function(e){
+          return '<button type="button" data-action="' + (chat.panel === 'emoji' ? 'chat-insert-emoji' : 'chat-react') + '" data-emoji="' + e + '"' + (chat.panel === 'react-more' ? ' data-id="' + esc(chat.reactFor || '') + '"' : '') + '>' + e + '</button>';
+        }).join('');
+      }).join('') + '</div></div>';
+  }
+  if(chat.panel === 'gif'){
+    var g = chat.gif, body;
+    if(g.error === 'gif_not_configured'){
+      body = '<div class="chat-gif-note"><strong>GIF search isn’t switched on yet.</strong><br>' +
+        (session.role === 'admin'
+          ? 'It needs a free GIPHY key: sign up at developers.giphy.com → Create an API key, then in Supabase open Edge Functions → api → Secrets and add <code>GIPHY_API_KEY</code>. It works right away — no app update needed. Meanwhile, GIF files from your device can be sent with the paperclip.'
+          : 'An admin needs to finish a one-time setup. Meanwhile you can send GIF files from your device with the paperclip.') + '</div>';
+    } else if(g.error){ body = '<p class="empty">' + esc(chatApiError({ code: g.error })) + '</p>'; }
+    else if(g.loading || !g.results){ body = '<p class="empty">Loading GIFs…</p>'; }
+    else if(!g.results.length){ body = '<p class="empty">No GIFs found.</p>'; }
+    else body = '<div class="chat-gif-grid">' + g.results.map(function(r, i){
+      return '<button type="button" data-action="chat-send-gif" data-i="' + i + '" title="' + esc(r.title) + '"><img src="' + esc(r.previewUrl) + '" alt="' + esc(r.title) + '" loading="lazy"></button>';
+    }).join('') + '</div><div class="chat-gif-credit">Powered by GIPHY</div>';
+    return '<div class="chat-panel" id="chat-panel">' +
+      '<div class="chat-panel-head"><input type="text" id="chat-gif-search" placeholder="Search GIFs" autocomplete="off" value="' + esc(g.q || '') + '"><button type="button" class="btn btn-sm btn-ghost" data-action="chat-panel-close">&times;</button></div>' +
+      '<div id="chat-gif-body">' + body + '</div></div>';
+  }
+  return '';
+}
+function chatComposerHTML(convId){
+  var list = chat.pending[convId] || [];
+  var chips = list.length ? '<div class="chat-pending-list">' + list.map(function(p, i){
+    var thumb = chatIsImageMime(p.mime) && p.previewUrl ? '<img src="' + esc(p.previewUrl) + '" alt="">'
+      : chatIsVideoMime(p.mime) ? '<span class="chat-file-icon vid">&#9654;</span>' : '<span class="chat-file-icon">' + chatExtLabel(p.name) + '</span>';
+    return '<div class="chat-pending">' + thumb + '<span class="chat-pending-name">' + esc(p.name) + ' <span class="muted">(' + esc(chatBytes(p.size)) + ')</span></span>' +
+      '<button type="button" class="btn btn-sm btn-ghost" data-action="chat-remove-pending" data-i="' + i + '" title="Remove">&times;</button></div>';
+  }).join('') + '</div>' : '';
+  return '<div class="chat-composer">' + chatPanelHTML() + chips +
+    '<div class="chat-compose-row">' +
+      '<label class="btn btn-ghost chat-tool" title="Photos, videos & files (50 MB max each)" for="chat-file-input">' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>' +
+        '<input type="file" id="chat-file-input" multiple accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip,.dwg,.ifc,*/*" style="display:none;">' +
+      '</label>' +
+      '<button type="button" class="btn btn-ghost chat-tool" data-action="chat-toggle-emoji" title="Emoji">&#128578;</button>' +
+      '<button type="button" class="btn btn-ghost chat-tool chat-gif-btn" data-action="chat-toggle-gif" title="GIF">GIF</button>' +
+      '<textarea id="chat-input" rows="1" maxlength="4000" placeholder="Type a message">' + esc(chat.drafts[convId] || '') + '</textarea>' +
+      '<button type="button" class="btn btn-primary" data-action="chat-send"' + (chat.sending ? ' disabled' : '') + '>Send</button>' +
+    '</div>' +
+  '</div>';
+}
+function chatMainHTML(){
+  var c = chatConv(chat.activeId);
+  if(!c){
+    return '<div class="chat-empty-main"><div style="font-size:40px; line-height:1;">&#128172;</div>' +
+      '<h2 style="font-size:22px;">Messages</h2><p class="muted" style="margin:0; max-width:340px;">' + siteText('messages.empty', { org: esc(STATE.orgName || 'SDI') }) + '</p></div>';
+  }
+  var tools = '';
+  var isAdmin = session.role === 'admin';
+  if(isAdmin){
+    tools = (c.kind === 'group' ? '<button type="button" class="btn btn-sm" data-action="chat-group-edit-open">Manage group</button>' : '') +
+      (c.kind === 'company' ? '<button type="button" class="btn btn-sm" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="' + (c.frozen ? '0' : '1') + '">' + (c.frozen ? 'Unfreeze' : 'Freeze') + '</button>' : '') +
+      '<button type="button" class="btn btn-sm" data-action="chat-report-open" data-id="' + esc(c.id) + '">Download report</button>';
+  }
+  var frozenBanner = c.frozen ? '<div class="chat-frozen-banner">&#10052; <strong>Frozen</strong>' + (c.frozenBy ? ' by ' + esc(c.frozenBy) : '') + ' — ' +
+    (isAdmin ? 'only admins can post. Members can still read it.' + (c.kind !== 'dm' ? ' <button type="button" class="chat-link-btn" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="0">Unfreeze</button>' : '') : 'you can read this chat, but it’s read-only for now.') + '</div>' : '';
+  var composer = (c.frozen && !isAdmin) ? '' : chatComposerHTML(c.id);
+  return '<div class="chat-head">' +
+      '<button type="button" class="btn btn-sm btn-ghost chat-back" data-action="chat-back" aria-label="Back to chats">&larr;</button>' +
+      chatAvatarHTML(c) +
+      '<div style="min-width:0; flex:1;"><div class="chat-head-title">' + esc(chatTitle(c)) + (c.frozen ? ' <span class="chat-frozen-tag">Frozen</span>' : '') + '</div><div class="chat-head-sub">' + esc(chatSubtitle(c)) + '</div></div>' +
+      '<div class="row" style="gap:6px;">' + tools + '</div>' +
+    '</div>' +
+    '<div class="chat-msgs" id="chat-msgs">' + chatMessagesHTML(c.id) + '</div>' +
+    frozenBanner + composer +
+    '<div class="chat-record-note">Messages and files are kept on company record — edited and deleted messages stay in the admin record.</div>';
+}
+function chatPageHTML(){
+  chatEnsureSession();
+  if(!chat.list && !chat.busyList) setTimeout(function(){ chatLoadList(); }, 0);
+  var isAdmin = session.role === 'admin';
+  return '<div class="chat-shell' + (chat.activeId ? ' has-active' : '') + '">' +
+    '<aside class="chat-side">' +
+      '<div class="chat-side-head">' +
+        '<div class="row" style="justify-content:space-between; align-items:center;"><h2 style="font-size:20px;">Chats</h2>' +
+        '<div class="row" style="gap:6px;">' +
+          '<button type="button" class="btn btn-sm btn-primary" data-action="chat-new-dm-open">New chat</button>' +
+          (isAdmin ? '<button type="button" class="btn btn-sm" data-action="chat-group-new-open">New group</button>' : '') +
+        '</div></div>' +
+        '<input type="text" id="chat-search" placeholder="Search chats" autocomplete="off" value="' + esc(chat.search || '') + '">' +
+      '</div>' +
+      '<div class="chat-list" id="chat-list">' + chatListItemsHTML() + '</div>' +
+    '</aside>' +
+    '<section class="chat-main" id="chat-main">' + chatMainHTML() + '</section>' +
+  '</div>';
+}
+function chatRefreshSide(){
+  var el = $('chat-list');
+  if(el) el.innerHTML = chatListItemsHTML();
+  if(chat.activeId){
+    var c = chatConv(chat.activeId);
+    var t = document.querySelector('.chat-head-title'), s = document.querySelector('.chat-head-sub');
+    if(c && t) t.innerHTML = esc(chatTitle(c)) + (c.frozen ? ' <span class="chat-frozen-tag">Frozen</span>' : '');
+    if(c && s) s.textContent = chatSubtitle(c);
+  }
+}
+function chatNearBottom(box){ return box.scrollHeight - box.scrollTop - box.clientHeight < 90; }
+function chatRefreshMessages(forceBottom, keepTop){
+  var box = $('chat-msgs');
+  if(!box || !chat.activeId) return;
+  if(chat.editingId && !forceBottom) return; // don't redraw under someone editing a message
+  var stick = forceBottom || (!keepTop && chatNearBottom(box));
+  var top = box.scrollTop;
+  box.innerHTML = chatMessagesHTML(chat.activeId);
+  box.scrollTop = stick ? box.scrollHeight : top;
+  if(stick) chatStickAfterMedia(box);
+}
+// Images/videos finish loading after the list is drawn and push content
+// down; keep a pinned-to-bottom chat pinned while they load.
+function chatStickAfterMedia(box){
+  box.querySelectorAll('img, video').forEach(function(el){
+    var evt = el.tagName === 'VIDEO' ? 'loadedmetadata' : 'load';
+    if(el.tagName === 'IMG' && el.complete) return;
+    el.addEventListener(evt, function(){ if(chatNearBottom(box) || box.scrollHeight - box.scrollTop - box.clientHeight < 400) box.scrollTop = box.scrollHeight; }, { once: true });
+  });
+}
+/* Whole-page render() hooks: keep scroll position and the typed draft
+   across the app's normal full redraws (the admin page redraws on every
+   background poll). */
+function chatCaptureBeforeRender(){
+  var box = $('chat-msgs');
+  chat.scroll = box ? { id: chat.activeId, top: box.scrollTop, bottom: chatNearBottom(box) } : null;
+  var input = $('chat-input');
+  if(input && chat.activeId) chat.drafts[chat.activeId] = input.value;
+  var gs = $('chat-gif-search'); if(gs) chat.gif.q = gs.value;
+}
+function chatAfterRender(){
+  chatUpdateBadges();
+  var box = $('chat-msgs');
+  if(!box) return;
+  if(chat.scroll && chat.scroll.id === chat.activeId && !chat.scroll.bottom) box.scrollTop = chat.scroll.top;
+  else { box.scrollTop = box.scrollHeight; chatStickAfterMedia(box); }
+  chatAutosize($('chat-input'));
+}
+function chatAutosize(t){
+  if(!t) return;
+  t.style.height = 'auto';
+  t.style.height = Math.min(160, t.scrollHeight + 2) + 'px';
+}
+function chatSearchGifs(q){
+  chat.gif.q = q || '';
+  chat.gif.loading = true; chat.gif.error = null;
+  var mine = chat.gif.seq = (chat.gif.seq || 0) + 1;
+  var paint = function(){ var b = $('chat-gif-body'); if(b && chat.panel === 'gif'){ var tmp = document.createElement('div'); tmp.innerHTML = chatPanelHTML(); var nb = tmp.querySelector('#chat-gif-body'); if(nb) b.innerHTML = nb.innerHTML; } };
+  paint();
+  callApi('chat-gif-search', { token: session.token, q: chat.gif.q }).then(function(d){
+    if(mine !== chat.gif.seq) return;
+    chat.gif.loading = false; chat.gif.results = d.gifs || []; paint();
+  }).catch(function(err){
+    if(mine !== chat.gif.seq) return;
+    chat.gif.loading = false; chat.gif.error = (err && err.code) || 'gif_search_failed'; paint();
+  });
+}
+function chatWireAfterRender(){
+  var input = $('chat-input');
+  if(input){
+    input.addEventListener('input', function(){ if(chat.activeId) chat.drafts[chat.activeId] = input.value; chatAutosize(input); });
+    input.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); chatSend(); }
+    });
+    // Paste a screenshot straight into the chat.
+    input.addEventListener('paste', function(e){
+      var items = (e.clipboardData && e.clipboardData.files) || [];
+      if(items.length){ e.preventDefault(); chatAddFiles(items); }
+    });
+  }
+  var main = $('chat-main');
+  if(main && !main._dropWired){
+    main._dropWired = true;
+    main.addEventListener('dragover', function(e){ if(chat.activeId){ e.preventDefault(); } });
+    main.addEventListener('drop', function(e){ if(chat.activeId && e.dataTransfer && e.dataTransfer.files.length){ e.preventDefault(); chatAddFiles(e.dataTransfer.files); } });
+  }
+  var edit = $('chat-edit-input');
+  if(edit){
+    edit.focus();
+    edit.setSelectionRange(edit.value.length, edit.value.length);
+    edit.addEventListener('keydown', function(e){
+      if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); handlers['chat-edit-save']({ dataset: { id: chat.editingId } }); }
+      if(e.key === 'Escape'){ e.preventDefault(); handlers['chat-edit-cancel'](); }
+    });
+  }
+  var search = $('chat-search');
+  if(search) search.addEventListener('input', function(){ chat.search = search.value; chatRefreshSide(); });
+  var fileInput = $('chat-file-input');
+  if(fileInput){
+    fileInput.addEventListener('change', function(){
+      var files = fileInput.files;
+      if(files && files.length) chatAddFiles(Array.prototype.slice.call(files));
+      fileInput.value = '';
+    });
+  }
+  var gifSearch = $('chat-gif-search');
+  if(gifSearch){
+    var t = null;
+    gifSearch.addEventListener('input', function(){ clearTimeout(t); t = setTimeout(function(){ chatSearchGifs(gifSearch.value.trim()); }, 400); });
+    gifSearch.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); clearTimeout(t); chatSearchGifs(gifSearch.value.trim()); } });
+  }
+  var dmSearch = $('chat-dm-search');
+  if(dmSearch){
+    dmSearch.focus();
+    dmSearch.addEventListener('input', function(){ var box = $('chat-dm-results'); if(box) box.innerHTML = chatDmResultsHTML(dmSearch.value); });
+    dmSearch.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); var first = document.querySelector('#chat-dm-results .chat-person'); if(first) first.click(); } });
+  }
+  var grpSearch = $('chat-grp-filter');
+  if(grpSearch){
+    grpSearch.addEventListener('input', function(){
+      var q = grpSearch.value.trim().toLowerCase();
+      document.querySelectorAll('.chat-grp-person').forEach(function(el){
+        el.style.display = !q || (el.getAttribute('data-name') || '').indexOf(q) !== -1 ? '' : 'none';
+      });
+    });
+  }
+}
+
+/* ---------- sending ---------- */
+function chatNewTemp(convId, extra){
+  var now = new Date().toISOString();
+  var m = Object.assign({ id: 'tmp-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7), conversationId: convId,
+    senderKey: chat.me ? chat.me.key : '', senderName: chat.me ? chat.me.name : '', body: null, createdAt: now, updatedAt: now,
+    mine: true, pending: true, deleted: false, reactions: [] }, extra || {});
+  (chat.messages[convId] = chat.messages[convId] || []).push(m);
+  return m;
+}
+function chatReplaceTemp(convId, tempId, real){
+  chat.messages[convId] = (chat.messages[convId] || []).filter(function(m){ return m.id !== tempId; });
+  if(real) chatMergeMessages(convId, [real]);
+  var c = chatConv(convId);
+  if(c && real){
+    c.lastMessageAt = real.createdAt;
+    c.lastPreview = real.body || (real.gif ? 'GIF' : real.attachment ? 'Attachment: ' + real.attachment.name : '');
+    c.lastSenderName = real.senderName;
+    chat.list.sort(function(a, b){ if(a.kind === 'company') return -1; if(b.kind === 'company') return 1; return (b.lastMessageAt || b.createdAt) > (a.lastMessageAt || a.createdAt) ? 1 : -1; });
+  }
+  if(chat.activeId === convId){ chatRefreshMessages(true); chatRefreshSide(); }
+}
+function chatSendOneFile(convId, item, caption){
+  var temp = chatNewTemp(convId, { body: caption || null, progress: 0, attachment: { id: 'tmp', name: item.name, mime: item.mime, size: item.size, localUrl: item.previewUrl } });
+  if(chat.activeId === convId) chatRefreshMessages(true);
+  var lastPaint = 0;
+  return callApi('chat-upload-url', { token: session.token, conversationId: convId, name: item.name, mime: item.mime, size: item.size }).then(function(u){
+    return chatUploadBlob(u.uploadPath, item.blob, function(p){
+      temp.progress = p;
+      if(Date.now() - lastPaint > 250 && chat.activeId === convId){ lastPaint = Date.now(); chatRefreshMessages(false); }
+    }).then(function(){ return u.attachmentId; });
+  }).then(function(attachmentId){
+    return callApi('chat-send', { token: session.token, conversationId: convId, body: caption || '', attachmentId: attachmentId });
+  }).then(function(data){
+    chatReplaceTemp(convId, temp.id, data.message);
+    if(item.previewUrl) setTimeout(function(){ try{ URL.revokeObjectURL(item.previewUrl); }catch(e){} }, 60000);
+    return true;
+  }).catch(function(err){
+    chatReplaceTemp(convId, temp.id, null);
+    toast(item.name + ': ' + chatApiError(err), 'error');
+    return false;
+  });
+}
+function chatSend(){
+  var convId = chat.activeId;
+  if(!convId || chat.sending) return;
+  var input = $('chat-input');
+  var text = (input ? input.value : (chat.drafts[convId] || '')).replace(/\s+$/, '');
+  var files = (chat.pending[convId] || []).slice();
+  if(!text.trim() && !files.length) return;
+  if(text.length > 4000){ toast('That message is too long (4,000 characters max).', 'error'); return; }
+  chat.drafts[convId] = '';
+  chat.pending[convId] = [];
+  chat.panel = null;
+  if(input){ input.value = ''; chatAutosize(input); }
+  chat.sending = true;
+  if(files.length){
+    render();
+    // The text goes with the first file, like a caption; the rest follow.
+    var chain = Promise.resolve(), failedText = null;
+    files.forEach(function(f, i){
+      chain = chain.then(function(){ return chatSendOneFile(convId, f, i === 0 ? text : ''); }).then(function(ok){ if(!ok && i === 0 && text) failedText = text; });
+    });
+    chain.then(function(){
+      chat.sending = false;
+      if(failedText && !chat.drafts[convId]){ chat.drafts[convId] = failedText; }
+      var sb = document.querySelector('[data-action="chat-send"]'); if(sb) sb.disabled = false;
+      if(failedText) render();
+    });
+    return;
+  }
+  var temp = chatNewTemp(convId, { body: text.trim() });
+  chatRefreshMessages(true);
+  var sendBtn = document.querySelector('[data-action="chat-send"]'); if(sendBtn) sendBtn.disabled = true;
+  callApi('chat-send', { token: session.token, conversationId: convId, body: text }).then(function(data){
+    chat.sending = false;
+    chatReplaceTemp(convId, temp.id, data.message);
+    var sb = document.querySelector('[data-action="chat-send"]'); if(sb) sb.disabled = false;
+  }).catch(function(err){
+    chat.sending = false;
+    chatReplaceTemp(convId, temp.id, null);
+    chat.drafts[convId] = text;
+    toast(chatApiError(err), 'error');
+    render();
+  });
+}
+function chatOpenConversation(id){
+  chat.activeId = id;
+  chat.editingId = null; chat.reactFor = null; chat.panel = null;
+  var c = chatConv(id); if(c) c.unread = 0;
+  chat.lastMsgAt = Date.now();
+  render();
+  if(!chat.messages[id]) chatLoadMessages(id);
+  else { callApi('chat-mark-read', { token: session.token, conversationId: id }).catch(function(){}); chatPollActive(); }
+  var input = $('chat-input'); if(input && window.innerWidth > 720) input.focus();
+}
+function chatFindMsg(id){
+  var arr = chat.messages[chat.activeId] || [];
+  for(var i = 0; i < arr.length; i++){ if(arr[i].id === id) return arr[i]; }
+  return null;
+}
+function chatToggleReaction(msgId, emoji){
+  var convId = chat.activeId;
+  var m = chatFindMsg(msgId);
+  if(!m || m.deleted || m.pending) return;
+  var before = JSON.parse(JSON.stringify(m.reactions || []));
+  var list = m.reactions = (m.reactions || []).map(function(r){ return Object.assign({}, r); });
+  var r = list.filter(function(x){ return x.emoji === emoji; })[0];
+  var myName = chat.me ? chat.me.name : '';
+  if(r && r.mine){ r.count--; r.mine = false; r.names = (r.names || []).filter(function(n){ return n !== myName; }); if(r.count <= 0) list.splice(list.indexOf(r), 1); }
+  else if(r){ r.count++; r.mine = true; r.names = (r.names || []).concat([myName]); }
+  else list.push({ emoji: emoji, count: 1, mine: true, names: [myName] });
+  chat.reactFor = null; chat.panel = null;
+  if(chat.activeId === convId) render();
+  callApi('chat-react', { token: session.token, messageId: msgId, emoji: emoji }).then(function(d){
+    chatMergeMessages(convId, [d.message]);
+    if(chat.activeId === convId) chatRefreshMessages(false);
+  }).catch(function(err){
+    m.reactions = before;
+    if(chat.activeId === convId) chatRefreshMessages(false);
+    toast(chatApiError(err), 'error');
+  });
+}
+
+/* ---------- modals ---------- */
+function chatDmResultsHTML(query){
+  var q = (query || '').trim().toLowerCase();
+  var people = chat.directory.filter(function(p){ return p.active && (!chat.me || p.key !== chat.me.key); });
+  if(q) people = people.filter(function(p){ return chatDisplayName(p.name, p.key).toLowerCase().indexOf(q) !== -1; });
+  if(!people.length) return '<p class="empty">No one matches.</p>';
+  return people.map(function(p){
+    return '<button type="button" class="chat-person" data-action="chat-start-dm" data-key="' + esc(p.key) + '">' +
+      '<span class="chat-av">' + esc(chatInitials(chatDisplayName(p.name, p.key))) + '</span>' +
+      '<span style="flex:1; text-align:left;">' + esc(chatDisplayName(p.name, p.key)) + '</span>' +
+      '<span class="badge-shift">' + esc(p.role === 'admin' ? 'Admin' : (p.shift ? shiftName(p.shift) : 'Employee')) + '</span>' +
+    '</button>';
+  }).join('');
+}
+function chatGroupFormHTML(existing){
+  var members = existing ? (existing.explicit || existing.members || []) : (chat.me ? [chat.me.key] : []);
+  var shiftOpts = '<option value="">No — I’ll pick members</option>' + shiftCodes().map(function(code){
+    return '<option value="' + esc(code) + '"' + (existing && existing.shiftCode === code ? ' selected' : '') + '>Yes — everyone on ' + esc(shiftName(code)) + ' shift</option>';
+  }).join('');
+  var people = chat.directory.filter(function(p){ return p.active; });
+  var group = function(role, label){
+    var list = people.filter(function(p){ return p.role === role; });
+    if(!list.length) return '';
+    return '<div class="chat-grp-label">' + label + '</div>' + list.map(function(p){
+      var nm = chatDisplayName(p.name, p.key);
+      return '<label class="chat-grp-person" data-name="' + esc(nm.toLowerCase()) + '"><input type="checkbox" class="chat-grp-member" value="' + esc(p.key) + '"' + (members.indexOf(p.key) !== -1 ? ' checked' : '') + '> ' +
+        esc(nm) + (p.role === 'employee' && p.shift ? ' <span class="muted" style="font-size:12px;">· ' + esc(shiftName(p.shift)) + '</span>' : '') + '</label>';
+    }).join('');
+  };
+  return '<div class="stack" style="gap:12px;">' +
+    '<label class="field">Group name <span class="req">*</span><input type="text" id="chat-grp-name" maxlength="80" placeholder="e.g. AM Shift, Tekla Project" value="' + esc(existing ? existing.name || '' : '') + '"></label>' +
+    '<label class="field">Include a whole shift automatically?<select id="chat-grp-shift">' + shiftOpts + '</select></label>' +
+    '<p class="muted" style="margin:-6px 0 0; font-size:12px;">' + siteText('messages.group_shift') + '</p>' +
+    '<div class="field">Members<input type="text" id="chat-grp-filter" placeholder="Filter names" autocomplete="off" style="margin-top:4px;">' +
+      '<div class="chat-grp-box">' + group('admin', 'Admins') + group('employee', 'Employees') + '</div></div>' +
+  '</div>';
+}
+function chatReportFormHTML(){
+  var recs = ui.modalData.records;
+  var opts;
+  if(!recs) opts = '<option value="">Loading chats…</option>';
+  else {
+    opts = '<option value="__all">All chats (every conversation, including direct messages)</option>' + recs.map(function(c){
+      var label;
+      if(c.kind === 'dm') label = 'Direct: ' + (c.members || []).map(function(k){ return chatPersonNameFrom(ui.modalData.recDir, k); }).join(' ↔ ');
+      else label = (c.kind === 'group' ? 'Group: ' : '') + (c.name || 'Chat');
+      if(c.deletedAt) label += ' (deleted)';
+      else if(c.archived) label += ' (archived)';
+      if(c.frozen) label += ' (frozen)';
+      return '<option value="' + esc(c.id) + '"' + (ui.modalData.convId === c.id ? ' selected' : '') + '>' + esc(label) + '</option>';
+    }).join('');
+  }
+  return '<div class="stack" style="gap:12px;">' +
+    '<label class="field">Conversation<select id="chat-rep-conv">' + opts + '</select></label>' +
+    '<div class="grid grid-2">' +
+      '<label class="field">From (optional)<input type="date" id="chat-rep-from"></label>' +
+      '<label class="field">To (optional)<input type="date" id="chat-rep-to"></label>' +
+    '</div>' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('messages.report') + '</p>' +
+  '</div>';
+}
+function chatModalHTML(){
+  if(ui.modal === 'chatNewDm'){
+    return modalShell('New chat',
+      '<input type="text" id="chat-dm-search" placeholder="Search a name" autocomplete="off" style="width:100%; margin-bottom:10px;">' +
+      '<div id="chat-dm-results" class="chat-people">' + chatDmResultsHTML('') + '</div>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>');
+  }
+  if(ui.modal === 'chatGroupNew'){
+    return modalShell('New group chat', chatGroupFormHTML(null),
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="chat-group-create">Create Group</button>');
+  }
+  if(ui.modal === 'chatGroupEdit'){
+    var c = chatConv(ui.modalData.id);
+    if(!c) return '';
+    return modalShell('Manage group', chatGroupFormHTML({ name: c.name, shiftCode: c.shiftCode, explicit: ui.modalData.explicit }) +
+      '<div class="chat-grp-admin">' +
+        '<div><strong>' + (c.frozen ? 'This group is frozen' : 'Freeze group') + '</strong><div class="muted" style="font-size:12.5px;">' + (c.frozen ? 'Members can read it, but only admins can post.' : 'Make it read-only: members can read, only admins can post.') + '</div></div>' +
+        '<button type="button" class="btn btn-sm" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="' + (c.frozen ? '0' : '1') + '">' + (c.frozen ? 'Unfreeze' : 'Freeze') + '</button>' +
+      '</div>',
+      '<button class="btn btn-danger" data-action="chat-group-delete-open" style="margin-right:auto;">Delete group</button>' +
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="chat-group-save">Save</button>');
+  }
+  if(ui.modal === 'chatGroupDelete'){
+    var dgc = chatConv(ui.modalData.id);
+    return modalShell('Delete group chat',
+      '<p style="margin:0 0 10px; font-size:14px;">Delete <strong>' + esc(dgc ? dgc.name : 'this group') + '</strong> for everyone? It disappears from every member’s chat list and can’t be reopened.</p>' +
+      '<p class="muted" style="margin:0 0 12px; font-size:13px;">Its messages and files stay in the admin chat records (Downloads → Chat records), marked as a deleted group.</p>' +
+      '<label style="display:flex; gap:8px; align-items:flex-start; font-size:13.5px;"><input type="checkbox" id="chat-grp-erase" style="margin-top:3px;"> <span>Also <strong>erase everything permanently</strong> — all its messages, photos, videos and files. They won’t be in any report and can’t be recovered.</span></label>' +
+      '<p style="margin:12px 0 0; font-size:13px;"><button type="button" class="chat-link-btn" data-action="chat-report-open" data-id="' + esc(ui.modalData.id) + '">Download this group’s report first</button></p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="chat-group-delete">Delete group</button>');
+  }
+  if(ui.modal === 'chatGroupArchive'){
+    var g = chatConv(ui.modalData.id);
+    return modalShell('Archive group',
+      '<p style="margin:0; font-size:14px;">Archive <strong>' + esc(g ? g.name : 'this group') + '</strong>? It disappears from everyone’s chat list and no one can post in it. Its messages stay on record and are still included in chat reports.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="chat-group-archive">Archive</button>');
+  }
+  if(ui.modal === 'chatDelete'){
+    return modalShell('Delete message',
+      '<p style="margin:0; font-size:14px;">Delete this message for everyone in the chat? It will show as “This message was deleted.” A copy stays on company record for admins.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="chat-delete-confirm">Delete</button>');
+  }
+  if(ui.modal === 'chatImage'){
+    var m = chatFindMsg(ui.modalData.id);
+    var a = m && m.attachment;
+    return modalShell(a ? a.name : 'Photo',
+      '<div style="display:flex; justify-content:center;">' + (a ? '<img id="chat-image-full" src="' + esc(chatStorageUrl(a.url) || '') + '" alt="" style="max-width:100%; max-height:70vh; border-radius:10px; border:1px solid var(--line);">' : '<p class="empty">This photo isn’t available.</p>') + '</div>',
+      (a ? '<button class="btn btn-ghost" data-action="chat-download-att" data-att="' + esc(a.id) + '">Download</button>' : '') +
+      '<button class="btn btn-primary" data-action="close-modal">Close</button>');
+  }
+  if(ui.modal === 'chatReport'){
+    return modalShell('Download chat report', chatReportFormHTML(),
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="chat-report-download"' + (ui.modalData.busy ? ' disabled' : '') + '>' + (ui.modalData.busy ? 'Preparing…' : 'Download PDF') + '</button>');
+  }
+  return '';
+}
+function chatReadGroupForm(){
+  var keys = [];
+  document.querySelectorAll('.chat-grp-member:checked').forEach(function(el){ keys.push(el.value); });
+  return { name: (($('chat-grp-name') || {}).value || '').trim(), shiftCode: ($('chat-grp-shift') || {}).value || null, memberKeys: keys };
+}
+
+/* ---------- handlers ---------- */
+var CHAT_HANDLERS = {
+  'open-messages': function(){ ui.empView = 'chat'; chatLoadList(true); render(); },
+  'close-subview': function(){ ui.empView = null; chat.activeId = null; render(); },
+  'chat-open': function(el){ chatOpenConversation(el.dataset.id); },
+  'chat-back': function(){ chat.activeId = null; chat.editingId = null; chat.panel = null; render(); },
+  'chat-send': function(){ chatSend(); },
+  'chat-load-older': function(){ chatLoadOlder(); },
+  'chat-remove-pending': function(el){
+    var list = chat.pending[chat.activeId] || [];
+    var i = Number(el.dataset.i);
+    var inp = $('chat-input'); if(inp) chat.drafts[chat.activeId] = inp.value;
+    if(list[i] && list[i].previewUrl){ try{ URL.revokeObjectURL(list[i].previewUrl); }catch(e){} }
+    list.splice(i, 1); render();
+  },
+  'chat-toggle-emoji': function(){ var inp = $('chat-input'); if(inp) chat.drafts[chat.activeId] = inp.value; chat.panel = chat.panel === 'emoji' ? null : 'emoji'; chat.reactFor = null; render(); },
+  'chat-toggle-gif': function(){
+    var inp = $('chat-input'); if(inp) chat.drafts[chat.activeId] = inp.value;
+    chat.panel = chat.panel === 'gif' ? null : 'gif'; chat.reactFor = null; render();
+    if(chat.panel === 'gif'){ if(!chat.gif.results || chat.gif.error) chatSearchGifs(chat.gif.q); var gs = $('chat-gif-search'); if(gs) gs.focus(); }
+  },
+  'chat-panel-close': function(){ chat.panel = null; chat.reactFor = null; render(); },
+  'chat-insert-emoji': function(el){
+    var inp = $('chat-input');
+    var e = el.dataset.emoji;
+    if(inp){
+      var s = inp.selectionStart != null ? inp.selectionStart : inp.value.length, en = inp.selectionEnd != null ? inp.selectionEnd : s;
+      inp.value = inp.value.slice(0, s) + e + inp.value.slice(en);
+      chat.drafts[chat.activeId] = inp.value;
+      inp.focus(); inp.setSelectionRange(s + e.length, s + e.length); chatAutosize(inp);
+    }
+  },
+  'chat-send-gif': function(el){
+    var g = (chat.gif.results || [])[Number(el.dataset.i)];
+    var convId = chat.activeId;
+    if(!g || !convId) return;
+    chat.panel = null;
+    var temp = chatNewTemp(convId, { gif: { url: g.url, title: g.title } });
+    render();
+    callApi('chat-send', { token: session.token, conversationId: convId, body: '', gif: { url: g.url, title: g.title } }).then(function(d){
+      chatReplaceTemp(convId, temp.id, d.message);
+    }).catch(function(err){ chatReplaceTemp(convId, temp.id, null); toast(chatApiError(err), 'error'); });
+  },
+  'chat-react-open': function(el){ chat.reactFor = chat.reactFor === el.dataset.id ? null : el.dataset.id; chat.panel = null; chatRefreshMessages(false, true); },
+  'chat-react-more': function(el){ var inp = $('chat-input'); if(inp) chat.drafts[chat.activeId] = inp.value; chat.reactFor = el.dataset.id; chat.panel = 'react-more'; render(); },
+  'chat-react': function(el){ chatToggleReaction(el.dataset.id, el.dataset.emoji); },
+  'chat-new-dm-open': function(){ ui.modal = 'chatNewDm'; ui.modalData = {}; render(); },
+  'chat-start-dm': function(el){
+    var key = el.dataset.key;
+    ui.modal = null; render();
+    callApi('chat-open-dm', { token: session.token, targetKey: key }).then(function(data){
+      return chatLoadList(true).then(function(){ chatOpenConversation(data.conversationId); });
+    }).catch(function(err){ toast(chatApiError(err), 'error'); });
+  },
+  'chat-edit-start': function(el){
+    var input = $('chat-input'); if(input && chat.activeId) chat.drafts[chat.activeId] = input.value;
+    chat.editingId = el.dataset.id; chat.reactFor = null; chatRefreshMessages(true); chatWireAfterRender();
+  },
+  'chat-edit-cancel': function(){ chat.editingId = null; chatRefreshMessages(false, true); },
+  'chat-edit-save': function(el){
+    var id = el.dataset.id, convId = chat.activeId;
+    var input = $('chat-edit-input');
+    var text = input ? input.value.trim() : '';
+    var m = chatFindMsg(id);
+    if(!m){ chat.editingId = null; return; }
+    if(!text && !m.attachment && !m.gif){ toast('A message can’t be empty — use Delete instead.', 'error'); return; }
+    chat.editingId = null;
+    if(text === (m.body || '')){ chatRefreshMessages(false, true); return; }
+    var before = { body: m.body, editedAt: m.editedAt };
+    m.body = text || null; m.editedAt = m.editedAt || new Date().toISOString();
+    chatRefreshMessages(false, true);
+    callApi('chat-edit', { token: session.token, messageId: id, body: text }).then(function(data){
+      chatMergeMessages(convId, [data.message]);
+      if(chat.activeId === convId) chatRefreshMessages(false, true);
+    }).catch(function(err){
+      m.body = before.body; m.editedAt = before.editedAt;
+      if(chat.activeId === convId) chatRefreshMessages(false, true);
+      toast(chatApiError(err), 'error');
+    });
+  },
+  'chat-delete-open': function(el){ ui.modal = 'chatDelete'; ui.modalData = { id: el.dataset.id }; render(); },
+  'chat-delete-confirm': function(){
+    var id = ui.modalData.id;
+    ui.modal = null;
+    var m = chatFindMsg(id);
+    var prev = m ? { deleted: m.deleted, body: m.body, deletedBy: m.deletedBy } : null;
+    if(m){ m.deleted = true; m.body = null; m.deletedBy = chat.me ? chat.me.name : null; }
+    render();
+    callApi('chat-delete', { token: session.token, messageId: id }).then(function(){
+      toast('Message deleted', 'success');
+    }).catch(function(err){
+      if(m && prev){ m.deleted = prev.deleted; m.body = prev.body; m.deletedBy = prev.deletedBy; }
+      render();
+      toast(chatApiError(err), 'error');
+    });
+  },
+  'chat-view-image': function(el){ ui.modal = 'chatImage'; ui.modalData = { id: el.dataset.id }; render(); },
+  'chat-download-att': function(el){ chatOpenDownload(el.dataset.att); },
+  'chat-group-new-open': function(){ ui.modal = 'chatGroupNew'; ui.modalData = {}; render(); },
+  'chat-group-create': function(){
+    var f = chatReadGroupForm();
+    if(!f.name){ toast('Give the group a name.', 'error'); return; }
+    if(!f.shiftCode && f.memberKeys.filter(function(k){ return !chat.me || k !== chat.me.key; }).length === 0){ toast('Pick a shift or at least one member.', 'error'); return; }
+    ui.modal = null; render();
+    callApi('chat-create-group', { token: session.token, name: f.name, shiftCode: f.shiftCode, memberKeys: f.memberKeys }).then(function(data){
+      toast('Group created', 'success');
+      return chatLoadList(true).then(function(){ chatOpenConversation(data.conversationId); });
+    }).catch(function(err){ toast(chatApiError(err), 'error'); });
+  },
+  'chat-group-edit-open': function(){
+    var c = chatConv(chat.activeId);
+    if(!c) return;
+    // Pre-check only people who aren't in it just because of the linked shift.
+    var explicit = (c.members || []).filter(function(k){
+      if(!c.shiftCode || k.indexOf('e:') !== 0) return true;
+      var p = chatPerson(k); return !(p && p.shift === c.shiftCode);
+    });
+    ui.modal = 'chatGroupEdit'; ui.modalData = { id: c.id, explicit: explicit }; render();
+  },
+  'chat-group-save': function(){
+    var id = ui.modalData.id;
+    var f = chatReadGroupForm();
+    if(!f.name){ toast('Give the group a name.', 'error'); return; }
+    ui.modal = null; render();
+    callApi('chat-update-group', { token: session.token, conversationId: id, name: f.name, shiftCode: f.shiftCode || '', memberKeys: f.memberKeys }).then(function(){
+      toast('Group updated', 'success');
+      chatLoadList(true);
+    }).catch(function(err){ toast(chatApiError(err), 'error'); });
+  },
+  'chat-group-archive-open': function(){ ui.modal = 'chatGroupArchive'; render(); },
+  'chat-freeze-toggle': function(el){
+    var id = el.dataset.id, frozen = el.dataset.frozen === '1';
+    var c = chatConv(id);
+    var inModal = ui.modal === 'chatGroupEdit';
+    if(c){ c.frozen = frozen; c.frozenBy = frozen && chat.me ? chat.me.name : null; }
+    chat.lastFrozen = frozen;
+    render();
+    callApi('chat-freeze', { token: session.token, conversationId: id, frozen: frozen }).then(function(){
+      toast(frozen ? 'Chat frozen — members can read it, only admins can post' : 'Chat unfrozen', 'success');
+      chatLoadList(true);
+    }).catch(function(err){
+      if(c){ c.frozen = !frozen; }
+      chat.lastFrozen = !frozen;
+      render();
+      toast(chatApiError(err), 'error');
+    });
+    if(inModal) render();
+  },
+  'chat-group-delete-open': function(){ ui.modal = 'chatGroupDelete'; render(); },
+  'chat-group-delete': function(){
+    var id = ui.modalData.id;
+    var erase = !!(($('chat-grp-erase') || {}).checked);
+    ui.modal = null;
+    if(chat.activeId === id) chat.activeId = null;
+    if(chat.list) chat.list = chat.list.filter(function(x){ return x.id !== id; });
+    render();
+    callApi('chat-delete-group', { token: session.token, conversationId: id, erase: erase }).then(function(){
+      toast(erase ? 'Group deleted and permanently erased' : 'Group deleted — its messages are kept in the chat records', 'success');
+      chatLoadList(true);
+    }).catch(function(err){ toast(chatApiError(err), 'error'); chatLoadList(true); });
+  },
+  'chat-group-archive': function(){
+    var id = ui.modalData.id;
+    ui.modal = null; render();
+    callApi('chat-archive-group', { token: session.token, conversationId: id }).then(function(){
+      toast('Group archived — still kept in chat records', 'success');
+      if(chat.activeId === id) chat.activeId = null;
+      chatLoadList(true).then(function(){ render(); });
+    }).catch(function(err){ toast(chatApiError(err), 'error'); });
+  },
+  'chat-report-open': function(el){
+    ui.modal = 'chatReport'; ui.modalData = { convId: el && el.dataset ? el.dataset.id || null : null, records: null, recDir: [] }; render();
+    callApi('chat-records', { token: session.token }).then(function(data){
+      if(ui.modal !== 'chatReport') return;
+      ui.modalData.records = data.conversations || [];
+      ui.modalData.recDir = data.directory || [];
+      render();
+    }).catch(function(err){ toast(chatApiError(err), 'error'); });
+  },
+  'chat-report-download': function(){
+    if(ui.modalData.busy) return;
+    var sel = ($('chat-rep-conv') || {}).value || '';
+    if(!sel){ toast('Pick a conversation.', 'error'); return; }
+    var from = ($('chat-rep-from') || {}).value || '';
+    var to = ($('chat-rep-to') || {}).value || '';
+    if(from && to && to < from){ toast('The To date is before the From date.', 'error'); return; }
+    var payload = { token: session.token, conversationIds: sel === '__all' ? [] : [sel] };
+    // Dates are the viewer's local days: From = start of that day, To = end of that day.
+    if(from) payload.from = new Date(from + 'T00:00:00').toISOString();
+    if(to){ var t = new Date(to + 'T00:00:00'); t.setDate(t.getDate() + 1); payload.to = t.toISOString(); }
+    ui.modalData.busy = true; render();
+    toast('Preparing chat report…', 'success');
+    callApi('chat-report', payload).then(function(report){
+      report.rangeLabel = (from || to) ? ((from ? 'From ' + from : 'From the beginning') + ' to ' + (to || 'today')) : 'Complete history';
+      return chatBuildReport(report, sel === '__all' ? 'All' : sel);
+    }).then(function(){
+      ui.modal = null; render();
+    }).catch(function(err){
+      ui.modalData.busy = false; render();
+      toast(chatApiError(err), 'error');
+    });
+  }
+};
+
+/* ============================================================
+   CHAT REPORT → PDF
+   Lays the transcript out as A4-width HTML in a hidden iframe,
+   packs whole messages into pages, rasterizes each page with
+   html2canvas, and writes the pages into a PDF with a tiny
+   built-in PDF writer (JPEG page images, no extra library).
+   Falls back to an .html transcript if rendering isn't possible.
+   ============================================================ */
+function chatReportHTMLParts(report, media){
+  var dir = report.directory || [];
+  var nameOf = function(key, fallback){
+    for(var i = 0; i < dir.length; i++){ if(dir[i].key === key) return chatDisplayName(dir[i].name, key); }
+    return fallback ? chatDisplayName(fallback, key) : chatPersonNameFrom(dir, key);
+  };
+  var totalMsgs = 0, totalEdited = 0, totalDeleted = 0, totalFiles = 0;
+  (report.conversations || []).forEach(function(c){
+    c.messages.forEach(function(m){ totalMsgs++; if(m.editedAt) totalEdited++; if(m.deletedAt) totalDeleted++; if(m.attachment) totalFiles++; });
+  });
+  var blocks = [{ html:
+    '<div class="rep-cover">' + (LOGO_SRC ? '<img src="' + LOGO_SRC + '" class="rep-logo" alt="">' : '') +
+    '<div class="rep-title">CHAT REPORT</div>' +
+    '<div class="rep-org">' + esc(STATE.orgName || 'Steel Drafting Innovations') + '</div>' +
+    '<table class="rep-sum"><tr><td>Generated</td><td>' + esc(chatFullStamp(report.generatedAt)) + ' by ' + esc(report.generatedBy || '') + '</td></tr>' +
+    '<tr><td>Period</td><td>' + esc(report.rangeLabel || 'Complete history') + '</td></tr>' +
+    '<tr><td>Conversations</td><td>' + (report.conversations || []).length + '</td></tr>' +
+    '<tr><td>Messages</td><td>' + totalMsgs + ' (' + totalEdited + ' edited, ' + totalDeleted + ' deleted, ' + totalFiles + ' with files)</td></tr></table>' +
+    '<div class="rep-note">Company record. Edited messages list every earlier version; deleted messages are shown with their original text.</div></div>' }];
+  (report.conversations || []).forEach(function(c){
+    var members = (c.members || []).map(function(k){ return nameOf(k); });
+    var title = c.kind === 'company' ? (c.name || 'All Company') : c.kind === 'group' ? 'Group: ' + (c.name || '') : 'Direct message: ' + members.join(' ↔ ');
+    blocks.push({ newPage: true, html:
+      '<div class="rep-conv"><div class="rep-conv-title">' + esc(title) +
+        (c.deletedAt ? ' <span class="rep-tag del">DELETED by ' + esc(c.deletedBy || '?') + ' · ' + esc(chatFullStamp(c.deletedAt)) + '</span>' : (c.archived ? ' <span class="rep-tag">ARCHIVED</span>' : '')) +
+        (c.frozen ? ' <span class="rep-tag">FROZEN</span>' : '') + '</div>' +
+      '<div class="rep-conv-sub">' + (c.kind === 'company' ? 'Everyone' : esc(members.join(', ') || '—')) +
+        (c.shiftCode ? ' · linked to ' + esc(shiftName(c.shiftCode)) + ' shift' : '') + ' · ' + c.messages.length + ' message' + (c.messages.length === 1 ? '' : 's') + '</div></div>' });
+    if(!c.messages.length) blocks.push({ html: '<div class="rep-empty">No messages in this period.</div>' });
+    var lastDay = '';
+    c.messages.forEach(function(m){
+      var day = new Date(m.createdAt).toDateString();
+      if(day !== lastDay){ lastDay = day; var d = new Date(m.createdAt); blocks.push({ html: '<div class="rep-day">' + esc(WEEKDAY_LONG[d.getDay()] + ', ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear()) + '</div>' }); }
+      var who = nameOf(m.senderKey, m.senderName);
+      var status = m.deletedAt ? '<span class="rep-tag del">DELETED by ' + esc(m.deletedBy ? chatDisplayName(m.deletedBy, m.deletedBy === m.senderName ? m.senderKey : null) : '?') + ' · ' + esc(chatFullStamp(m.deletedAt)) + '</span>'
+        : m.editedAt ? '<span class="rep-tag ed">EDITED</span>' : '';
+      var body = m.body ? '<div class="rep-body' + (m.deletedAt ? ' struck' : '') + '">' + esc(m.body).replace(/\n/g, '<br>') + '</div>' : '';
+      var att = '';
+      if(m.gif) att += '<div class="rep-att">GIF: ' + esc(m.gif.title || 'GIF') + '</div>' + (media[m.gif.url] ? '<img class="rep-img" src="' + media[m.gif.url] + '" alt="">' : '');
+      if(m.attachment){
+        var kind = chatIsImageMime(m.attachment.mime) ? 'Photo' : chatIsVideoMime(m.attachment.mime) ? 'Video' : 'File';
+        att += '<div class="rep-att">' + kind + ': ' + esc(m.attachment.name) + ' (' + esc(chatBytes(m.attachment.size)) + ')</div>' +
+          (media[m.attachment.id] ? '<img class="rep-img" src="' + media[m.attachment.id] + '" alt="">' : '');
+      }
+      var reacts = (m.reactions || []).length ? '<div class="rep-react">Reactions: ' + m.reactions.map(function(r){ return esc(r.emoji + ' ' + chatDisplayName(r.name, null)); }).join(', ') + '</div>' : '';
+      var edits = (m.history || []).filter(function(hh){ return hh.action === 'edit'; });
+      var hist = edits.length ? '<div class="rep-hist"><div class="rep-hist-h">Earlier versions</div>' + edits.map(function(hh, i){
+        return '<div class="rep-hist-row"><span class="rep-hist-when">v' + (i + 1) + ' · replaced ' + esc(chatFullStamp(hh.at)) + '</span>' + esc(hh.previousBody || '(no text)').replace(/\n/g, '<br>') + '</div>';
+      }).join('') + '</div>' : '';
+      blocks.push({ html: '<div class="rep-msg"><div class="rep-msg-h"><strong>' + esc(who) + '</strong> <span class="rep-time">' + esc(chatClock(m.createdAt)) + '</span> ' + status + '</div>' + body + att + reacts + hist + '</div>' });
+    });
+  });
+  return blocks;
+}
+function chatReportHtmlDoc(blocks){
+  return '<!doctype html><html><head><meta charset="utf-8"><title>SDI Chat Report</title><style>' + CHAT_REPORT_CSS + '</style></head><body><div class="page">' +
+    blocks.map(function(b){ return b.html; }).join('') + '</div></body></html>';
+}
+function chatFetchAsDataUrl(url){
+  return fetch(url).then(function(r){ if(!r.ok) throw new Error('fetch ' + r.status); return r.blob(); }).then(function(blob){
+    return new Promise(function(res, rej){ var fr = new FileReader(); fr.onload = function(){ res(fr.result); }; fr.onerror = rej; fr.readAsDataURL(blob); });
+  });
+}
+function chatReportFileBase(label){
+  var d = new Date();
+  return 'SDI_Chat_Report_' + String(label || 'Chat').replace(/[^A-Za-z0-9]+/g, '_').slice(0, 40) + '_' + d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+}
+function chatBuildReport(report, label){
+  // Photos and GIFs are embedded (shrunk) in the report; videos and other
+  // files are listed by name. Anything that can't be fetched is listed only.
+  var media = {}, jobs = [];
+  (report.conversations || []).forEach(function(c){ c.messages.forEach(function(m){
+    if(m.attachment && chatIsImageMime(m.attachment.mime) && m.attachment.url){
+      var id = m.attachment.id;
+      jobs.push(chatFetchAsDataUrl(chatStorageUrl(m.attachment.url)).then(function(du){ media[id] = du; }).catch(function(){}));
+    }
+    if(m.gif && m.gif.url){
+      var gu = m.gif.url;
+      jobs.push(chatFetchAsDataUrl(gu).then(function(du){ media[gu] = du; }).catch(function(){}));
+    }
+  }); });
+  var nameForFile = label === 'All' ? 'All_Chats' : (function(){
+    var c = (report.conversations || [])[0];
+    if(!c) return 'Chat';
+    if(c.kind === 'dm') return 'DM_' + (c.members || []).map(function(k){ return chatPersonNameFrom(report.directory, k).split(',')[0]; }).join('_');
+    return c.name || 'Chat';
+  })();
+  var base = chatReportFileBase(nameForFile);
+  return Promise.all(jobs).then(function(){
+    var blocks = chatReportHTMLParts(report, media);
+    return chatRenderBlocksToPdf(blocks).then(function(blob){
+      downloadBlobDirect(base + '.pdf', blob);
+    }, function(reason){
+      console.error('Chat report PDF fallback: ' + reason);
+      offerDownload(base, chatReportHtmlDoc(blocks), 'html');
+    });
+  });
+}
+function chatRenderBlocksToPdf(blocks){
+  return new Promise(function(resolve, reject){
+    if(typeof html2canvas !== 'function'){ reject('html2canvas not available'); return; }
+    var iframe = document.createElement('iframe');
+    iframe.style.cssText = 'position:fixed; top:-99999px; left:-99999px; width:794px; height:1200px; border:0;';
+    var done = false;
+    var finish = function(fn, arg){ if(done) return; done = true; if(iframe.parentNode) iframe.parentNode.removeChild(iframe); fn(arg); };
+    var safety = setTimeout(function(){ finish(reject, 'timed out'); }, 180000);
+    iframe.onload = function(){
+      try{
+        var doc = iframe.contentDocument;
+        var holder = doc.getElementById('measure');
+        var els = holder.children;
+        var PAGE_H = 1123, usable = PAGE_H - 96 - 24;
+        var pages = [], cur = [], curH = 0;
+        for(var i = 0; i < els.length; i++){
+          var h = els[i].getBoundingClientRect().height;
+          var forceNew = blocks[i].newPage && cur.length;
+          if(cur.length && (forceNew || curH + h > usable)){ pages.push(cur); cur = []; curH = 0; }
+          cur.push(i); curH += h;
+        }
+        if(cur.length) pages.push(cur);
+        holder.style.display = 'none';
+        var out = [], total = pages.length;
+        var step = function(pi){
+          if(done) return;
+          if(pi >= total){ clearTimeout(safety); finish(resolve, chatJpegPagesToPdf(out)); return; }
+          var page = doc.createElement('div');
+          page.className = 'page';
+          page.innerHTML = pages[pi].map(function(ix){ return blocks[ix].html; }).join('') +
+            '<div class="rep-foot">SDI chat report · page ' + (pi + 1) + ' of ' + total + '</div>';
+          doc.body.appendChild(page);
+          // Pages are A4 size; a single very long message can make its page taller rather than being cut off.
+          var ph = Math.max(PAGE_H, Math.ceil(page.getBoundingClientRect().height));
+          page.style.height = ph + 'px';
+          html2canvas(page, { backgroundColor: '#ffffff', scale: 1.6, width: 794, height: ph, windowWidth: 794, windowHeight: ph, useCORS: true, logging: false }).then(function(canvas){
+            var url = canvas.toDataURL('image/jpeg', 0.88);
+            out.push({ w: canvas.width, h: canvas.height, bytes: chatBase64ToBytes(url.slice(url.indexOf(',') + 1)) });
+            doc.body.removeChild(page);
+            setTimeout(function(){ step(pi + 1); }, 0);
+          }).catch(function(err){ clearTimeout(safety); finish(reject, 'html2canvas failed: ' + (err && err.message ? err.message : err)); });
+        };
+        setTimeout(function(){ step(0); }, 50);
+      }catch(err){ clearTimeout(safety); finish(reject, 'layout failed: ' + (err && err.message ? err.message : err)); }
+    };
+    iframe.srcdoc = '<!doctype html><html><head><meta charset="utf-8"><style>' + CHAT_REPORT_CSS + '</style></head><body><div class="page" id="measure">' +
+      blocks.map(function(b){ return '<div>' + b.html + '</div>'; }).join('') + '</div></body></html>';
+    document.body.appendChild(iframe);
+  });
+}
+
+var CHAT_REPORT_CSS =
+  'body{margin:0;background:#fff;font-family:"IBM Plex Sans",Arial,sans-serif;color:#14171A;font-size:13px;line-height:1.45;}' +
+  '.page{width:794px;padding:48px 56px;box-sizing:border-box;background:#fff;}' +
+  '.rep-cover{text-align:center;padding:20px 0 26px;border-bottom:3px solid #14171A;margin-bottom:18px;}' +
+  '.rep-logo{max-width:260px;max-height:70px;display:block;margin:0 auto 14px;}' +
+  '.rep-title{font-size:26px;font-weight:800;letter-spacing:.08em;}' +
+  '.rep-org{color:#43505B;margin-bottom:14px;}' +
+  '.rep-sum{margin:0 auto;border-collapse:collapse;text-align:left;font-size:12.5px;}' +
+  '.rep-sum td{padding:3px 10px;border-bottom:1px solid #E4E8EA;} .rep-sum td:first-child{color:#43505B;font-weight:600;}' +
+  '.rep-note{margin-top:12px;font-size:11.5px;color:#43505B;}' +
+  '.rep-conv{background:#14171A;color:#fff;padding:10px 14px;border-radius:6px;margin:0 0 8px;}' +
+  '.rep-conv-title{font-size:16px;font-weight:700;} .rep-conv-sub{font-size:11.5px;color:#C9D1D6;}' +
+  '.rep-day{font-size:11px;font-weight:700;color:#2A6F97;text-transform:uppercase;letter-spacing:.06em;margin:12px 0 4px;border-bottom:1px solid #DCEAF2;padding-bottom:2px;}' +
+  '.rep-msg{padding:6px 0 8px;border-bottom:1px solid #EEF1F2;}' +
+  '.rep-msg-h{font-size:12.5px;} .rep-time{color:#43505B;font-size:11.5px;}' +
+  '.rep-body{margin-top:2px;white-space:normal;word-wrap:break-word;} .rep-body.struck{text-decoration:line-through;color:#8A2C27;}' +
+  '.rep-tag{font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px;background:#E9ECEE;color:#43505B;margin-left:4px;}' +
+  '.rep-tag.del{background:#F7E0DE;color:#B23A34;} .rep-tag.ed{background:#F6E9D8;color:#8A5516;}' +
+  '.rep-att{margin-top:4px;font-size:12px;color:#2A6F97;} .rep-img{display:block;max-width:320px;max-height:240px;margin-top:4px;border:1px solid #D7DCDD;border-radius:4px;}' +
+  '.rep-hist{margin-top:5px;padding:5px 8px;background:#F6F7F8;border-left:3px solid #B8752A;font-size:12px;}' +
+  '.rep-hist-h{font-weight:700;font-size:11px;color:#8A5516;} .rep-hist-when{display:block;color:#43505B;font-size:10.5px;}' +
+  '.rep-hist-row{margin-top:3px;} .rep-empty{color:#8A94A0;font-style:italic;padding:8px 0;}' +
+  '.rep-react{margin-top:3px;font-size:12px;color:#43505B;}' +
+  '.rep-foot{font-size:10px;color:#8A94A0;text-align:right;margin-top:10px;}';
+
+
+function chatBase64ToBytes(b64){
+  var bin = atob(b64), out = new Uint8Array(bin.length);
+  for(var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+/* Minimal PDF writer: one JPEG image per page, each page sized to its
+   image (A4 width), so no text ever gets cut off mid-message. */
+function chatJpegPagesToPdf(pages){
+  var chunks = [], offsets = [], length = 0;
+  var enc = function(s){ var b = new Uint8Array(s.length); for(var i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 255; return b; };
+  var push = function(part){ var b = typeof part === 'string' ? enc(part) : part; chunks.push(b); length += b.length; };
+  var n = pages.length;
+  // objects: 1 catalog, 2 pages, then per page: page, content, image
+  push('%PDF-1.4\n%\xE2\xE3\xCF\xD3\n');
+  var kids = [];
+  for(var i = 0; i < n; i++) kids.push((3 + i * 3) + ' 0 R');
+  offsets[1] = length; push('1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  offsets[2] = length; push('2 0 obj\n<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + n + ' >>\nendobj\n');
+  pages.forEach(function(p, i){
+    var pageObj = 3 + i * 3, contentObj = pageObj + 1, imgObj = pageObj + 2;
+    var wPt = 595.28, hPt = +(595.28 * p.h / p.w).toFixed(2);
+    offsets[pageObj] = length;
+    push(pageObj + ' 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + wPt + ' ' + hPt + '] /Resources << /XObject << /Im' + i + ' ' + imgObj + ' 0 R >> >> /Contents ' + contentObj + ' 0 R >>\nendobj\n');
+    var content = 'q ' + wPt + ' 0 0 ' + hPt + ' 0 0 cm /Im' + i + ' Do Q';
+    offsets[contentObj] = length;
+    push(contentObj + ' 0 obj\n<< /Length ' + content.length + ' >>\nstream\n' + content + '\nendstream\nendobj\n');
+    offsets[imgObj] = length;
+    push(imgObj + ' 0 obj\n<< /Type /XObject /Subtype /Image /Width ' + p.w + ' /Height ' + p.h + ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' + p.bytes.length + ' >>\nstream\n');
+    push(p.bytes);
+    push('\nendstream\nendobj\n');
+  });
+  var total = 3 + n * 3;
+  var xref = length;
+  var x = 'xref\n0 ' + total + '\n0000000000 65535 f \n';
+  for(var k = 1; k < total; k++) x += String(offsets[k]).padStart(10, '0') + ' 00000 n \n';
+  push(x + 'trailer\n<< /Size ' + total + ' /Root 1 0 R >>\nstartxref\n' + xref + '\n%%EOF');
+  return new Blob(chunks, { type: 'application/pdf' });
+}
+
+
+/* ============================================================
+   COMPANY CALENDAR (v43)
+   Month view of company events, Philippine holidays and team
+   birthdays (month/day only). Everyone can view it; admins add,
+   edit and remove events and holidays. Events/holidays marked
+   "post a greeting" and every birthday get an automatic message
+   in the All Company chat on the day (8:05 AM Manila), handled
+   entirely by the server. Refreshes itself every minute while open.
+   ============================================================ */
+var cal = { month: null, data: null, key: null, loading: false, error: null, selected: null, lastAt: 0 };
+function calMonth(){ if(!cal.month) cal.month = currentMonthKey(); return cal.month; }
+function calIsOpen(){
+  if(!session.token) return false;
+  if(session.role === 'admin') return ui.adminTab === 'calendar';
+  if(session.role === 'employee') return ui.empView === 'calendar';
+  return false;
+}
+function calYmd(d){ return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+function calTodayYmd(){ return calYmd(new Date()); }
+function calGridRange(monthKey){
+  var mi = monthInfo(monthKey);
+  var first = new Date(mi.year, mi.month - 1, 1);
+  var start = new Date(first); start.setDate(1 - first.getDay());
+  var last = new Date(mi.year, mi.month, 0);
+  var end = new Date(last); end.setDate(last.getDate() + (6 - last.getDay()));
+  // also cover the next 45 days for the "Coming up" list
+  var soon = new Date(); soon.setDate(soon.getDate() + 45);
+  var today = new Date(); today.setHours(0, 0, 0, 0);
+  return { start: start, end: end, from: calYmd(start < today ? start : today), to: calYmd(end > soon ? end : soon) };
+}
+function calLoad(force){
+  if(!session.token) return;
+  var r = calGridRange(calMonth());
+  var key = r.from + '|' + r.to;
+  if(cal.loading && !force) return;
+  cal.loading = true;
+  callApi('calendar-get', { token: session.token, from: r.from, to: r.to }).then(function(d){
+    cal.loading = false; cal.error = null; cal.lastAt = Date.now();
+    cal.data = d; cal.key = key;
+    if(calIsOpen()) safeRender();
+  }).catch(function(err){
+    cal.loading = false; cal.lastAt = Date.now(); cal.error = apiErrorMessage(err);
+    if(calIsOpen()) safeRender();
+  });
+}
+setInterval(function(){
+  if(!session.token || !DATA_READY || !calIsOpen()) return;
+  if(Date.now() - cal.lastAt > 60000) calLoad();
+}, 5000);
+
+function calItemsOn(ymd){
+  var out = [];
+  if(!cal.data) return out;
+  (cal.data.events || []).forEach(function(e){ if(e.startDate <= ymd && (e.endDate || e.startDate) >= ymd) out.push({ type: e.kind, ev: e }); });
+  var m = Number(ymd.slice(5, 7)), d = Number(ymd.slice(8, 10));
+  var y = Number(ymd.slice(0, 4));
+  var leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  (cal.data.birthdays || []).forEach(function(b){
+    if((b.month === m && b.day === d) || (!leap && b.month === 2 && b.day === 29 && m === 2 && d === 28)) out.push({ type: 'birthday', b: b });
+  });
+  var order = { holiday: 0, event: 1, birthday: 2 };
+  out.sort(function(a, b){ return order[a.type] - order[b.type]; });
+  return out;
+}
+function calFirstName(name){
+  var n = String(name || '');
+  var first = n.indexOf(',') !== -1 ? n.split(',')[1] : n;
+  return first.trim().split(/\s+/)[0].toLowerCase().replace(/^./, function(c){ return c.toUpperCase(); });
+}
+function calChipHTML(it){
+  if(it.type === 'birthday') return '<span class="cal-chip bday">&#127874; ' + esc(calFirstName(it.b.name)) + '</span>';
+  var e = it.ev;
+  return '<span class="cal-chip ' + (it.type === 'holiday' ? 'hol' : 'evt') + '">' + (e.startTime && it.type === 'event' ? esc(fmtTime12(e.startTime).replace(':00', '')) + ' ' : '') + esc(e.title) + '</span>';
+}
+function calTimeLabel(e){
+  if(!e.startTime) return 'All day';
+  return fmtTime12(e.startTime) + (e.endTime ? ' – ' + fmtTime12(e.endTime) : '');
+}
+function calDateLabel(ymd){
+  var d = new Date(ymd + 'T00:00:00');
+  return WEEKDAY_LONG[d.getDay()] + ', ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getDate();
+}
+function calDetailRowHTML(it, isAdmin){
+  if(it.type === 'birthday'){
+    return '<div class="cal-detail bday"><div class="cal-detail-title">&#127874; ' + esc(formatName(it.b.name)) + '’s birthday</div>' +
+      '<div class="muted" style="font-size:12.5px;">' + siteText('calendar.birthday_greet') + '</div></div>';
+  }
+  var e = it.ev;
+  var range = e.endDate && e.endDate !== e.startDate ? calDateLabel(e.startDate) + ' – ' + calDateLabel(e.endDate) : calTimeLabel(e);
+  return '<div class="cal-detail ' + (it.type === 'holiday' ? 'hol' : 'evt') + '">' +
+    '<div class="row" style="justify-content:space-between; gap:8px; align-items:flex-start;">' +
+      '<div style="min-width:0;"><div class="cal-detail-title">' + esc(e.title) + ' <span class="pill ' + (it.type === 'holiday' ? 'pill-bad' : 'pill-accent') + '" style="font-size:10.5px;">' + (it.type === 'holiday' ? 'Holiday' : 'Event') + '</span></div>' +
+      '<div class="muted" style="font-size:12.5px;">' + esc(range) + (e.greet ? ' · auto-post on the day' : '') + '</div></div>' +
+      (isAdmin ? '<div class="row" style="gap:4px; flex:none;"><button type="button" class="btn btn-sm" data-action="cal-edit-open" data-id="' + esc(e.id) + '">Edit</button>' +
+        '<button type="button" class="btn btn-sm btn-danger" data-action="cal-delete-open" data-id="' + esc(e.id) + '">Delete</button></div>' : '') +
+    '</div>' +
+    (e.description ? '<div style="font-size:13.5px; margin-top:6px; white-space:pre-wrap;">' + esc(e.description) + '</div>' : '') +
+  '</div>';
+}
+function calendarPageHTML(){
+  var monthKey = calMonth();
+  var r = calGridRange(monthKey);
+  var key = r.from + '|' + r.to;
+  if((cal.key !== key || !cal.data) && !cal.loading) setTimeout(function(){ calLoad(true); }, 0);
+  var isAdmin = session.role === 'admin';
+  var mi = monthInfo(monthKey);
+  var today = calTodayYmd();
+  var cells = '';
+  for(var d = new Date(r.start); d <= r.end; d.setDate(d.getDate() + 1)){
+    var ymd = calYmd(d);
+    var inMonth = d.getMonth() === mi.month - 1;
+    var items = calItemsOn(ymd);
+    var shown = items.slice(0, 3).map(calChipHTML).join('');
+    var more = items.length > 3 ? '<span class="cal-more">+' + (items.length - 3) + ' more</span>' : '';
+    cells += '<button type="button" class="cal-cell' + (inMonth ? '' : ' out') + (ymd === today ? ' today' : '') + (ymd === cal.selected ? ' sel' : '') +
+      (items.some(function(i){ return i.type === 'holiday'; }) ? ' has-hol' : '') + '" data-action="cal-select" data-date="' + ymd + '">' +
+      '<span class="cal-num">' + d.getDate() + '</span>' + shown + more + '</button>';
+  }
+  var sel = cal.selected;
+  var dayPanel = sel ? '<div class="card card-pad stack" style="gap:10px;">' +
+      '<div class="row" style="justify-content:space-between; align-items:center;"><h3 style="font-size:18px;">' + esc(calDateLabel(sel)) + '</h3>' +
+      (isAdmin ? '<button type="button" class="btn btn-sm btn-primary" data-action="cal-add-open" data-date="' + sel + '">+ Add on this day</button>' : '') + '</div>' +
+      (calItemsOn(sel).length ? calItemsOn(sel).map(function(it){ return calDetailRowHTML(it, isAdmin); }).join('') : '<p class="empty" style="margin:0;">Nothing scheduled.</p>') +
+    '</div>' : '';
+  // Coming up: next 45 days
+  var upcoming = [];
+  var start = new Date(); start.setHours(0, 0, 0, 0);
+  for(var i = 0; i < 45 && upcoming.length < 12; i++){
+    var dd = new Date(start); dd.setDate(start.getDate() + i);
+    var y = calYmd(dd);
+    calItemsOn(y).forEach(function(it){
+      if(it.type !== 'birthday' && it.ev.startDate < y && y !== calYmd(start)) return; // list multi-day events once
+      upcoming.push({ ymd: y, it: it });
+    });
+  }
+  var upHTML = upcoming.length ? upcoming.slice(0, 12).map(function(u){
+    var title = u.it.type === 'birthday' ? '&#127874; ' + esc(formatName(u.it.b.name)) + '’s birthday' : esc(u.it.ev.title);
+    return '<button type="button" class="cal-up" data-action="cal-select" data-date="' + u.ymd + '">' +
+      '<span class="cal-up-date"><strong>' + new Date(u.ymd + 'T00:00:00').getDate() + '</strong>' + MONTH_NAMES[Number(u.ymd.slice(5, 7)) - 1].slice(0, 3) + '</span>' +
+      '<span style="min-width:0;"><span class="cal-up-title">' + title + '</span><span class="muted" style="font-size:12px;">' +
+      (u.ymd === calYmd(start) ? 'Today' : esc(WEEKDAY_LONG[new Date(u.ymd + 'T00:00:00').getDay()])) +
+      (u.it.type === 'holiday' ? ' · Holiday' : u.it.type === 'event' ? ' · ' + esc(calTimeLabel(u.it.ev)) : '') + '</span></span></button>';
+  }).join('') : '<p class="empty" style="margin:0;">Nothing in the next 45 days.</p>';
+
+  var emp = session.role === 'employee' ? getEmployee(session.employeeId) : null;
+  var bdayCard = emp ? '<div class="card card-pad stack" style="gap:6px;"><div style="font-weight:600;">Your birthday</div>' +
+      '<div class="muted" style="font-size:13px;">' + (emp.birthday ? esc(MONTH_NAMES[Number(emp.birthday.slice(5, 7)) - 1] + ' ' + Number(emp.birthday.slice(8, 10))) + ' — the team gets a reminder and you get a greeting in All Company chat.' : 'Add it so the team can greet you on your day. Only the month and day are shown.') + '</div>' +
+      '<div><button type="button" class="btn btn-sm" data-action="cal-bday-open">' + (emp.birthday ? 'Change' : 'Add birthday') + '</button></div></div>' : '';
+
+  return '<div class="stack" style="gap:16px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">' +
+      '<div class="row" style="gap:8px; align-items:center;">' +
+        '<button class="btn btn-sm" data-action="cal-month" data-delta="-1" aria-label="Previous month">&larr;</button>' +
+        '<h2 style="font-size:22px; min-width:170px; text-align:center;">' + esc(monthKeyLabel(monthKey)) + '</h2>' +
+        '<button class="btn btn-sm" data-action="cal-month" data-delta="1" aria-label="Next month">&rarr;</button>' +
+        (monthKey !== currentMonthKey() ? '<button class="btn btn-sm btn-ghost" data-action="cal-month" data-delta="0">Today</button>' : '') +
+      '</div>' +
+      '<div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">' +
+        '<span class="cal-legend"><span class="cal-chip hol">Holiday</span><span class="cal-chip evt">Event</span><span class="cal-chip bday">&#127874; Birthday</span></span>' +
+        (isAdmin ? '<button class="btn btn-sm btn-primary" data-action="cal-add-open" data-date="' + (cal.selected || calTodayYmd()) + '">+ Add event</button>' : '') +
+      '</div>' +
+    '</div>' +
+    (cal.error ? '<p style="color:var(--bad); margin:0;">' + esc(cal.error) + '</p>' : '') +
+    '<div class="cal-layout">' +
+      '<div class="card cal-grid-card"><div class="cal-grid">' +
+        ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(function(w){ return '<div class="cal-dow">' + w + '</div>'; }).join('') + cells +
+      '</div>' + (!cal.data ? '<p class="empty">Loading calendar…</p>' : '') + '</div>' +
+      '<div class="stack" style="gap:14px;">' + dayPanel +
+        '<div class="card card-pad stack" style="gap:8px;"><div style="font-weight:600;">Coming up</div>' + upHTML + '</div>' + bdayCard +
+        (isAdmin ? '<p class="muted" style="margin:0; font-size:12px;">' + siteText('calendar.admin_help') + '</p>' : '') +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+function calEventFormHTML(e, date){
+  e = e || { startDate: date, kind: 'event', greet: false };
+  var allDay = !e.startTime;
+  return '<div class="stack" style="gap:12px;">' +
+    '<label class="field">Title <span class="req">*</span><input type="text" id="cal-title" maxlength="120" value="' + esc(e.title || '') + '" placeholder="e.g. Team Building, Company Outing"></label>' +
+    '<label class="field">Type<select id="cal-kind"><option value="event"' + (e.kind !== 'holiday' ? ' selected' : '') + '>Company event</option><option value="holiday"' + (e.kind === 'holiday' ? ' selected' : '') + '>Holiday</option></select></label>' +
+    '<div class="grid grid-2">' +
+      '<label class="field">Start date <span class="req">*</span><input type="date" id="cal-start" value="' + esc(e.startDate || '') + '"></label>' +
+      '<label class="field">End date (multi-day)<input type="date" id="cal-end" value="' + esc(e.endDate && e.endDate !== e.startDate ? e.endDate : '') + '"></label>' +
+    '</div>' +
+    '<label style="display:flex; gap:8px; align-items:center; font-size:13.5px;"><input type="checkbox" id="cal-allday"' + (allDay ? ' checked' : '') + '> All day</label>' +
+    '<div class="grid grid-2" id="cal-times"' + (allDay ? ' hidden' : '') + '>' +
+      '<label class="field">Starts<input type="time" id="cal-stime" value="' + esc(e.startTime || '') + '"></label>' +
+      '<label class="field">Ends<input type="time" id="cal-etime" value="' + esc(e.endTime || '') + '"></label>' +
+    '</div>' +
+    '<label class="field">Details<textarea id="cal-desc" rows="3" maxlength="2000" placeholder="Where, what to bring, etc.">' + esc(e.description || '') + '</textarea></label>' +
+    '<label style="display:flex; gap:8px; align-items:center; font-size:13.5px;"><input type="checkbox" id="cal-greet"' + (e.greet ? ' checked' : '') + '> Post automatically in All Company chat on the day (8:05 AM)</label>' +
+    '<label class="field" id="cal-greet-wrap"' + (e.greet ? '' : ' hidden') + '>Message (optional)<textarea id="cal-greeting" rows="2" maxlength="500" placeholder="Leave blank for a standard greeting / reminder">' + esc(e.greeting || '') + '</textarea></label>' +
+  '</div>';
+}
+function calFindEvent(id){
+  return ((cal.data && cal.data.events) || []).filter(function(e){ return e.id === id; })[0] || null;
+}
+function calModalHTML(){
+  if(ui.modal === 'calEvent'){
+    var e = ui.modalData.id ? calFindEvent(ui.modalData.id) : null;
+    return modalShell(e ? 'Edit ' + (e.kind === 'holiday' ? 'holiday' : 'event') : 'Add to calendar', calEventFormHTML(e, ui.modalData.date),
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="cal-save">' + (e ? 'Save' : 'Add') + '</button>');
+  }
+  if(ui.modal === 'calDelete'){
+    var d = calFindEvent(ui.modalData.id);
+    return modalShell('Delete from calendar',
+      '<p style="margin:0; font-size:14px;">Delete <strong>' + esc(d ? d.title : 'this item') + '</strong> from the company calendar? Any automatic post for it won’t go out.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-danger" data-action="cal-delete">Delete</button>');
+  }
+  if(ui.modal === 'calBirthday'){
+    var emp = getEmployee(session.employeeId);
+    return modalShell('Your birthday',
+      '<label class="field">Birthday<input type="date" id="cal-bday" value="' + esc(emp && emp.birthday ? emp.birthday : '') + '" max="' + calTodayYmd() + '"></label>' +
+      '<p class="muted" style="margin:8px 0 0; font-size:12.5px;">' + siteText('calendar.birthday_privacy') + '</p>',
+      (emp && emp.birthday ? '<button class="btn btn-ghost" data-action="cal-bday-clear" style="margin-right:auto;">Remove</button>' : '') +
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="cal-bday-save">Save</button>');
+  }
+  return '';
+}
+function calWireAfterRender(){
+  var allDay = $('cal-allday'), times = $('cal-times');
+  if(allDay && times) allDay.addEventListener('change', function(){ times.hidden = allDay.checked; });
+  var greet = $('cal-greet'), gw = $('cal-greet-wrap');
+  if(greet && gw) greet.addEventListener('change', function(){ gw.hidden = !greet.checked; });
+}
+function calSaveBirthday(value){
+  var emp = getEmployee(session.employeeId);
+  ui.modal = null;
+  apiPersist('set-my-birthday', { token: session.token, birthday: value },
+    function(){ if(emp) emp.birthday = value; },
+    { successMsg: value ? 'Birthday saved' : 'Birthday removed', onSuccess: function(){ calLoad(true); } });
+}
+var CAL_HANDLERS = {
+  'open-calendar': function(){ ui.empView = 'calendar'; calLoad(true); render(); },
+  'cal-month': function(el){
+    var delta = Number(el.dataset.delta);
+    cal.month = delta === 0 ? currentMonthKey() : shiftMonthKey(calMonth(), delta);
+    cal.selected = null; render();
+  },
+  'cal-select': function(el){
+    var d = el.dataset.date;
+    cal.selected = cal.selected === d && el.classList.contains('cal-cell') ? null : d;
+    if(d.slice(0, 7) !== calMonth()) cal.month = d.slice(0, 7);
+    render();
+  },
+  'cal-add-open': function(el){ ui.modal = 'calEvent'; ui.modalData = { id: null, date: el.dataset.date || calTodayYmd() }; render(); },
+  'cal-edit-open': function(el){ ui.modal = 'calEvent'; ui.modalData = { id: el.dataset.id }; render(); },
+  'cal-delete-open': function(el){ ui.modal = 'calDelete'; ui.modalData = { id: el.dataset.id }; render(); },
+  'cal-save': function(){
+    var title = (($('cal-title') || {}).value || '').trim();
+    var start = ($('cal-start') || {}).value || '';
+    var end = ($('cal-end') || {}).value || '';
+    var allDay = ($('cal-allday') || {}).checked;
+    var stime = allDay ? '' : (($('cal-stime') || {}).value || '');
+    var etime = allDay ? '' : (($('cal-etime') || {}).value || '');
+    if(!title){ toast('Give it a title.', 'error'); return; }
+    if(!start){ toast('Pick a start date.', 'error'); return; }
+    if(end && end < start){ toast('The end date is before the start date.', 'error'); return; }
+    if(!allDay && !stime){ toast('Pick a start time, or tick All day.', 'error'); return; }
+    if(stime && etime && etime < stime && (!end || end === start)){ toast('The end time is before the start time.', 'error'); return; }
+    var payload = { token: session.token, id: ui.modalData.id || undefined, title: title, kind: ($('cal-kind') || {}).value || 'event',
+      startDate: start, endDate: end || null, startTime: stime || null, endTime: etime || null,
+      description: ($('cal-desc') || {}).value || '', greet: !!($('cal-greet') || {}).checked, greeting: ($('cal-greeting') || {}).value || '' };
+    ui.modal = null; render();
+    callApi('calendar-save-event', payload).then(function(){
+      toast(payload.id ? 'Calendar updated' : 'Added to calendar', 'success');
+      cal.selected = start; if(start.slice(0, 7) !== calMonth()) cal.month = start.slice(0, 7);
+      calLoad(true);
+    }).catch(function(err){ toast(apiErrorMessage(err), 'error'); });
+  },
+  'cal-delete': function(){
+    var id = ui.modalData.id;
+    ui.modal = null;
+    if(cal.data) cal.data.events = (cal.data.events || []).filter(function(e){ return e.id !== id; });
+    render();
+    callApi('calendar-delete-event', { token: session.token, id: id }).then(function(){ toast('Deleted from calendar', 'success'); calLoad(true); })
+      .catch(function(err){ toast(apiErrorMessage(err), 'error'); calLoad(true); });
+  },
+  'cal-bday-open': function(){ ui.modal = 'calBirthday'; ui.modalData = {}; render(); },
+  'cal-bday-save': function(){
+    var v = ($('cal-bday') || {}).value || '';
+    if(!v){ toast('Pick your birthday first.', 'error'); return; }
+    if(v > calTodayYmd()){ toast('That date is in the future.', 'error'); return; }
+    calSaveBirthday(v);
+  },
+  'cal-bday-clear': function(){ calSaveBirthday(null); }
+};
+
+/* ---------- styles (kept with the feature so it's self-contained) ---------- */
+(function injectChatStyles(){
+  var css =
+  '.chat-shell{display:grid;grid-template-columns:300px 1fr;height:min(78vh,760px);min-height:460px;background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);}' +
+  '.chat-side{border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:#F7F9FA;}' +
+  '.chat-side-head{padding:14px 14px 10px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid var(--line);}' +
+  '.chat-side-head input{width:100%;}' +
+  '.chat-list{overflow-y:auto;flex:1;padding:6px;}' +
+  '.chat-item{display:flex;gap:10px;width:100%;text-align:left;background:none;border:0;border-radius:10px;padding:9px 10px;cursor:pointer;align-items:center;color:inherit;}' +
+  '.chat-item:hover{background:var(--surface-2);} .chat-item.active{background:var(--accent-soft);}' +
+  '.chat-item-main{flex:1;min-width:0;display:flex;flex-direction:column;}' +
+  '.chat-item-top,.chat-item-bottom{display:flex;justify-content:space-between;gap:6px;align-items:center;}' +
+  '.chat-item-title{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.chat-item-time{font-size:11px;color:var(--ink-soft);flex:none;}' +
+  '.chat-item-preview{font-size:12.5px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.chat-item.unread .chat-item-title,.chat-item.unread .chat-item-preview{color:var(--ink);font-weight:700;}' +
+  '.chat-item-count{background:var(--accent);color:#fff;font-size:11px;font-weight:700;min-width:18px;height:18px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0 5px;flex:none;}' +
+  '.chat-av{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none;background:var(--accent-soft);color:var(--accent);}' +
+  '.chat-main{display:flex;flex-direction:column;min-width:0;min-height:0;}' +
+  '.chat-empty-main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;text-align:center;padding:24px;}' +
+  '.chat-head{display:flex;gap:10px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);}' +
+  '.chat-head-title{font-weight:700;font-size:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.chat-head-sub{font-size:12px;color:var(--ink-soft);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.chat-back{display:none;}' +
+  '.chat-msgs{flex:1;overflow-y:auto;padding:14px 16px;background:#FBFCFC;min-height:0;}' +
+  '.chat-day{text-align:center;margin:14px 0 8px;} .chat-day span{font-size:11.5px;font-weight:600;color:var(--ink-soft);background:var(--surface-2);padding:2px 10px;border-radius:10px;}' +
+  '.chat-msg{display:flex;gap:8px;margin-top:10px;align-items:flex-start;} .chat-msg.cont{margin-top:3px;}' +
+  '.chat-msg.mine{justify-content:flex-end;}' +
+  '.chat-av-sm{width:28px;height:28px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none;margin-top:18px;} .chat-av-sm.spacer{visibility:hidden;margin-top:0;height:1px;}' +
+  '.chat-msg-col{max-width:72%;display:flex;flex-direction:column;} .chat-msg.mine .chat-msg-col{align-items:flex-end;}' +
+  '.chat-meta{font-size:11.5px;color:var(--ink-soft);margin-bottom:2px;} .chat-meta strong{color:var(--ink);font-weight:600;}' +
+  '.chat-bubble-row{display:flex;gap:6px;align-items:center;} .chat-msg.mine .chat-bubble-row{justify-content:flex-end;}' +
+  '.chat-bubble{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:7px 11px;font-size:14px;word-wrap:break-word;overflow-wrap:anywhere;min-width:0;}' +
+  '.chat-msg.mine .chat-bubble{background:var(--accent-soft);border-color:#C6DCEA;}' +
+  '.chat-bubble.deleted{background:transparent;color:var(--ink-soft);font-size:13px;}' +
+  '.chat-bubble.pending{opacity:.6;} .chat-bubble.editing{width:min(460px,60vw);} .chat-bubble.editing textarea{width:100%;resize:vertical;font:inherit;}' +
+  '.chat-edited{display:block;font-size:10.5px;color:var(--ink-soft);margin-top:2px;}' +
+  '.chat-actions{display:flex;gap:2px;opacity:0;transition:opacity .12s;} .chat-msg:hover .chat-actions,.chat-msg:focus-within .chat-actions{opacity:1;}' +
+  '.chat-actions button{background:none;border:0;color:var(--ink-soft);font-size:11.5px;cursor:pointer;padding:3px 5px;border-radius:6px;} .chat-actions button:hover{background:var(--surface-2);color:var(--ink);}' +
+  '.chat-img-btn{display:block;border:0;padding:0;background:none;cursor:zoom-in;margin-top:4px;}' +
+  '.chat-img{display:block;max-width:min(280px,55vw);max-height:260px;border-radius:8px;min-width:80px;min-height:60px;background:var(--surface-2);object-fit:cover;} .chat-img.loading{width:180px;height:120px;}' +
+  '.chat-file{display:flex;gap:10px;align-items:center;margin-top:4px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:7px 10px;cursor:pointer;text-align:left;color:inherit;font:inherit;}' +
+  '.chat-file:hover{border-color:var(--accent);}' +
+  '.chat-file-icon{width:38px;height:38px;border-radius:8px;background:var(--bad-soft);color:var(--bad);font-size:10.5px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none;}' +
+  '.chat-file-name{display:block;font-weight:600;font-size:13px;overflow-wrap:anywhere;} .chat-file-size{display:block;font-size:11.5px;color:var(--ink-soft);}' +
+  '.chat-composer{border-top:1px solid var(--line);padding:10px 12px;background:var(--surface);}' +
+  '.chat-compose-row{display:flex;gap:8px;align-items:flex-end;}' +
+  '.chat-compose-row textarea{flex:1;resize:none;min-height:40px;max-height:160px;font:inherit;font-size:14px;padding:9px 11px;border:1px solid var(--line-strong);border-radius:10px;}' +
+  '.chat-attach{padding:9px 10px;cursor:pointer;margin:0;}' +
+  '.chat-pending{display:flex;gap:10px;align-items:center;background:var(--surface-2);border-radius:10px;padding:6px 8px;margin-bottom:8px;}' +
+  '.chat-pending img{width:42px;height:42px;object-fit:cover;border-radius:6px;} .chat-pending-name{flex:1;font-size:13px;overflow-wrap:anywhere;}' +
+  '.chat-record-note{font-size:11px;color:var(--ink-soft);text-align:center;padding:0 12px 8px;background:var(--surface);}' +
+  '.chat-people{max-height:52vh;overflow-y:auto;display:flex;flex-direction:column;gap:2px;}' +
+  '.chat-person{display:flex;gap:10px;align-items:center;width:100%;background:none;border:0;border-radius:10px;padding:8px;cursor:pointer;font:inherit;color:inherit;} .chat-person:hover{background:var(--surface-2);}' +
+  '.chat-grp-box{max-height:34vh;overflow-y:auto;border:1px solid var(--line);border-radius:10px;padding:6px 10px;margin-top:6px;}' +
+  '.chat-grp-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);margin:8px 0 2px;}' +
+  '.chat-grp-person{display:flex;gap:8px;align-items:center;font-weight:400;font-size:13.5px;padding:3px 0;}' +
+  '.chat-unread-badge{background:var(--bad);color:#fff;font-size:10.5px;font-weight:700;min-width:17px;height:17px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;padding:0 5px;margin-left:6px;line-height:1;}' +
+  '.chat-unread-badge[hidden]{display:none;}' +
+  '.chat-bubble.bot{background:#FFF8E6;border-color:#F0DDA8;}' +
+  '.chat-av-sm.bot{background:#FFF1C9;color:#8A5516;font-size:14px;}' +
+  '.chat-bubble.media{padding:4px;background:transparent;border:0;}' +
+  '.chat-big-emoji{font-size:34px;line-height:1.2;}' +
+  '.chat-gif{display:block;max-width:min(260px,55vw);border-radius:8px;margin-top:4px;}' +
+  '.chat-video{display:block;max-width:min(320px,60vw);max-height:300px;border-radius:8px;margin-top:4px;background:#000;}' +
+  '.chat-link-btn{background:none;border:0;color:var(--accent);font-size:12px;cursor:pointer;padding:3px 0 0;}' +
+  '.chat-progress{height:5px;background:var(--surface-2);border-radius:3px;margin-top:6px;overflow:hidden;min-width:140px;} .chat-progress span{display:block;height:100%;background:var(--accent);}' +
+  '.chat-progress-label{font-size:11px;color:var(--ink-soft);margin-top:2px;}' +
+  '.chat-reacts{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px;} .chat-msg.mine .chat-reacts{justify-content:flex-end;}' +
+  '.chat-react-chip{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:1px 7px;font-size:13px;cursor:pointer;line-height:1.5;} .chat-react-chip span{font-size:11.5px;color:var(--ink-soft);font-weight:600;}' +
+  '.chat-react-chip.mine{background:var(--accent-soft);border-color:#9CC3DB;}' +
+  '.chat-react-bar{display:flex;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:3px 5px;box-shadow:var(--shadow);margin-top:4px;width:max-content;}' +
+  '.chat-msg.mine .chat-react-bar{align-self:flex-end;}' +
+  '.chat-react-bar button{background:none;border:0;font-size:19px;cursor:pointer;border-radius:50%;width:32px;height:32px;line-height:1;} .chat-react-bar button:hover{background:var(--surface-2);transform:scale(1.15);}' +
+  '.chat-tool{padding:8px 9px;cursor:pointer;margin:0;font-size:17px;line-height:1;} .chat-gif-btn{font-size:11px;font-weight:800;letter-spacing:.04em;}' +
+  '.chat-panel{border:1px solid var(--line);border-radius:12px;margin-bottom:8px;background:var(--surface);max-height:280px;display:flex;flex-direction:column;}' +
+  '.chat-panel-head{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:6px 8px;border-bottom:1px solid var(--line);} .chat-panel-head input{flex:1;}' +
+  '.chat-emoji-grid{overflow-y:auto;padding:6px 8px;display:flex;flex-wrap:wrap;} .chat-emoji-grid button{background:none;border:0;font-size:22px;width:38px;height:38px;cursor:pointer;border-radius:8px;} .chat-emoji-grid button:hover{background:var(--surface-2);}' +
+  '.chat-emoji-cat{width:100%;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);margin:6px 0 2px;}' +
+  '#chat-gif-body{overflow-y:auto;padding:6px;} .chat-gif-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(110px,1fr));gap:6px;} .chat-gif-grid button{border:0;padding:0;background:var(--surface-2);border-radius:8px;cursor:pointer;overflow:hidden;height:90px;} .chat-gif-grid img{width:100%;height:100%;object-fit:cover;display:block;}' +
+  '.chat-gif-credit{font-size:10.5px;color:var(--ink-soft);text-align:right;padding:4px 2px 0;} .chat-gif-note{font-size:13px;padding:8px;line-height:1.5;}' +
+  '.chat-pending-list{display:flex;flex-direction:column;gap:6px;margin-bottom:8px;max-height:170px;overflow-y:auto;}' +
+  '.chat-pending{display:flex;gap:10px;align-items:center;background:var(--surface-2);border-radius:10px;padding:6px 8px;}' +
+  '.chat-file-icon.vid{background:#1F2A33;color:#fff;font-size:14px;}' +
+  '.cal-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start;}' +
+  '.cal-grid-card{padding:10px;overflow:hidden;} .cal-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px;}' +
+  '.cal-dow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);text-align:center;padding:4px 0;}' +
+  '.cal-cell{min-height:92px;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:4px 5px;text-align:left;display:flex;flex-direction:column;gap:2px;cursor:pointer;font:inherit;color:inherit;overflow:hidden;min-width:0;}' +
+  '.cal-cell:hover{border-color:var(--accent);} .cal-cell.out{background:#F5F7F8;color:var(--ink-soft);} .cal-cell.today{border:2px solid var(--accent);} .cal-cell.sel{background:var(--accent-soft);} .cal-cell.has-hol .cal-num{color:var(--bad);}' +
+  '.cal-num{font-size:12.5px;font-weight:700;}' +
+  '.cal-chip{display:block;font-size:11px;line-height:1.35;padding:1px 5px;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}' +
+  '.cal-chip.hol{background:var(--bad-soft);color:var(--bad);} .cal-chip.evt{background:var(--accent-soft);color:var(--accent);} .cal-chip.bday{background:#FFF1C9;color:#8A5516;}' +
+  '.cal-legend{display:flex;gap:6px;} .cal-legend .cal-chip{display:inline-block;} .cal-more{font-size:10.5px;color:var(--ink-soft);}' +
+  '.cal-detail{border-left:4px solid var(--accent);padding:6px 10px;background:#F7F9FA;border-radius:6px;} .cal-detail.hol{border-color:var(--bad);} .cal-detail.bday{border-color:#D9A93A;}' +
+  '.cal-detail-title{font-weight:600;}' +
+  '.cal-up{display:flex;gap:10px;align-items:center;background:none;border:0;padding:5px 4px;text-align:left;cursor:pointer;border-radius:8px;font:inherit;color:inherit;width:100%;} .cal-up:hover{background:var(--surface-2);}' +
+  '.cal-up-date{display:flex;flex-direction:column;align-items:center;justify-content:center;width:42px;height:42px;border-radius:8px;background:var(--surface-2);font-size:10.5px;text-transform:uppercase;flex:none;} .cal-up-date strong{font-size:16px;line-height:1;}' +
+  '.cal-up-title{display:block;font-weight:600;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}' +
+  '.subview-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}' +
+  '@media (max-width:900px){.cal-layout{grid-template-columns:1fr;} .cal-cell{min-height:64px;} .cal-chip{font-size:10px;padding:0 3px;}}' +
+  '@media (max-width:720px){.topbar{flex-wrap:wrap;row-gap:8px;} .topbar .who{width:100%;justify-content:flex-end;flex-wrap:wrap;min-width:0;} .topbar .who strong{min-width:0;max-width:62vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}}' +
+  '.chat-compose-row textarea{min-width:0;width:100%;}' +
+  '@media (max-width:720px){' +
+    '.chat-shell.has-active{position:fixed;inset:0;z-index:60;height:100dvh;min-height:0;border-radius:0;border:0;}' +
+    '.chat-shell:not(.has-active){height:auto;min-height:60vh;}' +
+    '.chat-bubble-row{flex-direction:column;align-items:flex-start;gap:2px;} .chat-msg.mine .chat-bubble-row{align-items:flex-end;}' +
+    '.chat-msg.mine .chat-bubble-row .chat-actions{order:2;}' +
+    '.chat-actions{opacity:1;} .chat-actions button{font-size:11px;padding:2px 6px;}' +
+    '.chat-file{max-width:100%;} .chat-file-name{overflow-wrap:break-word;word-break:normal;}' +
+    '.chat-compose-row{gap:4px;} .chat-compose-row .btn-primary{padding:9px 12px;}' +
+    '.chat-record-note{display:none;}' +
+  '}' +
+  '.chat-frozen-tag{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#E3EEF8;color:#2A6F97;border-radius:6px;padding:1px 6px;vertical-align:middle;}' +
+  '.chat-frozen-banner{background:#EAF3FA;border-top:1px solid #C6DCEA;color:#1F4E6B;font-size:13px;padding:9px 14px;text-align:center;}' +
+  '.chat-grp-admin{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-top:14px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#F7F9FA;}' +
+  '@media (max-width:720px){.chat-shell{grid-template-columns:1fr;height:calc(100vh - 150px);} .chat-tool{padding:8px 6px;} .chat-head .btn{padding:5px 8px;font-size:12px;} .chat-shell.has-active .chat-side{display:none;} .chat-shell:not(.has-active) .chat-main{display:none;} .chat-back{display:inline-flex;} .chat-msg-col{max-width:84%;} .chat-actions{opacity:1;}}';
+  try{
+    var st = document.createElement('style');
+    st.id = 'sdi-chat-style';
+    st.textContent = css;
+    document.head.appendChild(st);
+  }catch(e){}
+})();
+
+// Chat + calendar actions join the app's click dispatcher.
+Object.assign(handlers, CHAT_HANDLERS, CAL_HANDLERS);
+
+/* ============================================================
+   WEBSITE TEXT (v43) — descriptions the PRIMARY admin can reword
+   ============================================================
+   Every description / helper line around the site has a key and a
+   default (the original wording below). The primary admin can reword any
+   of them from Admin → Website Text, or straight from the page with the
+   ✎ buttons. Saved wording lives on the server (site_texts table) and
+   reaches everyone within a few seconds; "Restore default" puts the
+   original back. Text is plain — it's escaped on display — and can use
+   {placeholders} like {primary} so names stay current if they change. */
+
+var SITE_TEXT_PAGES = [
+  ['landing', 'Welcome page (before signing in)'],
+  ['signin', 'Sign-in screens'],
+  ['employee', 'Employee dashboard'],
+  ['admin', 'Admin dashboard'],
+  ['people', 'People & Access'],
+  ['downloads', 'Downloads'],
+  ['messages', 'Messages'],
+  ['calendar', 'Company Calendar']
+];
+var SITE_TEXT_VAR_HELP = {
+  primary: 'the primary admin’s name',
+  org: 'the company name',
+  name: 'the employee’s name',
+  month: 'the month being viewed',
+  email: 'the reactivation email address'
+};
+var SITE_TEXT_DEFS = [
+  { key: 'landing.title', page: 'landing', label: 'Main heading', def: 'Who’s checking their timesheet?' },
+  { key: 'landing.intro', page: 'landing', label: 'Text under the main heading', def: 'Search your name to view your own hours and attendance. Your timesheet is private to you and admins.' },
+  { key: 'landing.admin_title', page: 'landing', label: 'Admin box — heading', def: 'Manage the timesheet' },
+  { key: 'landing.admin_sub', page: 'landing', label: 'Admin box — description', def: 'Edit hours, review concerns, manage people.' },
+
+  { key: 'signin.setup', page: 'signin', label: 'First-time passcode setup', def: 'You’re claiming the profile for {name}. Choose a passcode — you’ll use it next time to keep your timesheet private to you and admins.', vars: ['name'] },
+  { key: 'signin.unlock', page: 'signin', label: 'Employee passcode screen', def: 'Enter your passcode to view your timesheet.' },
+  { key: 'signin.forgot', page: 'signin', label: 'Employee “forgot passcode” note', def: 'Forgot it? Ask an admin to reset your passcode.' },
+  { key: 'signin.admin', page: 'signin', label: 'Admin login screen', def: 'Only people on the admin list can edit entries, resolve concerns, and manage staff.' },
+
+  { key: 'employee.concerns', page: 'employee', label: 'Concerns section', def: 'Flag a day that looks wrong and {primary} will review it.', vars: ['primary'] },
+  { key: 'employee.requests', page: 'employee', label: 'My requests section', def: 'Late, absence, sick leave, vacation leave, and document requests you\'ve sent to {primary}. Vacation leave and document requests both need approval; the rest are just for their records.', vars: ['primary'] },
+  { key: 'employee.forms', page: 'employee', label: 'Company forms section', def: 'Ask {primary} for a copy — once approved, a download button appears on your request below in "My requests".', vars: ['primary'] },
+  { key: 'employee.form_request', page: 'employee', label: 'Form request window', def: 'Sends {primary} a notification asking for this. Once approved, a Download PDF button will appear on this request under "My requests".', vars: ['primary'] },
+
+  { key: 'admin.entries_help', page: 'admin', label: 'Edit Entries instructions', def: 'Changes save automatically as you edit each day — no Save button needed (watch the status at the top right). Total, Reg and OT hours are calculated automatically — lunch and personal minutes are subtracted from that day\'s hours, same as when an employee enters them themselves before clocking out. A time in past this employee\'s shift\'s required time in (set in People & Access) is automatically marked Late with minutes calculated for you, same as when the employee clocks in themselves — no need to pick Late by hand, and correcting the time to an on-time one switches it back to Present. To excuse a late arrival, just set Status to Present. Type your own number into Min Late only if you want to override the calculation. Use × to clear just a time, or "Clear day" to blank the whole row.' },
+  { key: 'admin.broadcast', page: 'admin', label: 'Announcements box', def: 'Goes out to every active employee\'s Announcements list right away — good for company-wide updates or a daily reminder.' },
+
+  { key: 'people.my_account', page: 'people', label: 'My Admin Account', def: 'Setting your own passcode here replaces the shared admin password for your own sign-ins from then on — if you forget it, {primary} can reset it for you below.', vars: ['primary'] },
+  { key: 'people.employees', page: 'people', label: 'Employees list notes', def: 'Each person sets their own passcode the first time they open the app. Reset clears it so they can set a new one — use this if someone forgets theirs. Remove Photo takes off a profile picture that doesn\'t belong — a photo they can add back anytime, but only an admin can take down. Deactivate keeps their full history and blocks them from logging in — they\'ll see a message to email {email} for reactivation. Delete is permanent and removes them and all their entries for good.', vars: ['email'] },
+  { key: 'people.admins', page: 'people', label: 'Admins list notes', def: 'Admins sign in with their name plus either their own personal passcode (set from My Admin Account above) or, until they set one, the shared admin password. Only {primary} can reset another admin\'s passcode, remove their photo, or grant them access to send announcements — everyone manages their own account otherwise. Removing an admin here blocks their login immediately.', vars: ['primary'] },
+  { key: 'people.shifts', page: 'people', label: 'Shifts notes', def: 'Required Time In is when that shift is expected to clock in — an employee\'s own time-in punch past that time is automatically marked Late (shown in orange) and tagged with how many minutes late. Edit a shift to rename it, change its schedule, or change which days it runs — updates everywhere it\'s shown. Add Shift creates a brand-new shift employees can be assigned to. Remove deletes a shift entirely — anyone still on it is moved to another shift you pick first, and their past entries are kept.' },
+  { key: 'people.add_admin', page: 'people', label: 'Add Admin window', def: 'They’ll sign in with this name and the shared admin password. Email is optional, just for contact purposes.' },
+
+  { key: 'downloads.intro', page: 'downloads', label: 'Top of Downloads', def: 'Exports use the month shown at the top of the Admin dashboard — currently {month}. All exports below are styled tables — open with Excel or Google Sheets. Timesheet and Attendance Grid match the SDI Timesheet / Attendance Schedule templates; Summary is our own roll-up with no template to match.', vars: ['month'] },
+  { key: 'downloads.company', page: 'downloads', label: 'Company-wide exports', def: 'Every active employee, one file.' },
+  { key: 'downloads.chat', page: 'downloads', label: 'Chat records', def: 'The complete message record as a PDF — every chat including direct messages, with edits, deleted messages, reactions and photos.' },
+  { key: 'downloads.backup', page: 'downloads', label: 'Full data backup', def: 'Saves everything — every employee, entry, admin, and setting — as one file. Keep a recent one on hand in case data ever needs to be restored.' },
+  { key: 'downloads.forms', page: 'downloads', label: 'Company form templates', def: 'Blank Leave Form, Overtime Slip, and the rest — same set employees can download from their own dashboard.' },
+
+  { key: 'messages.empty', page: 'messages', label: 'Messages — no chat open', def: 'Pick a chat on the left, or start a new one with anyone at {org}.', vars: ['org'] },
+  { key: 'messages.group_shift', page: 'messages', label: 'New group — shift note', def: 'With a shift picked, everyone on that shift is in the group automatically — including people who join or move to that shift later. You can still add anyone else below.' },
+  { key: 'messages.report', page: 'messages', label: 'Chat report window', def: 'Downloads a PDF with every message in full — each earlier version of edited messages, deleted messages (with who deleted them and when), reactions, photos and GIFs. Videos and other files are listed by name.' },
+
+  { key: 'calendar.admin_help', page: 'calendar', label: 'Calendar note (admins)', def: 'Holidays and events with “post a greeting” on, and every birthday on file, get an automatic message in All Company chat at 8:05 AM on the day. Add birthdays from People & Access → Edit (employees can also add their own).' },
+  { key: 'calendar.birthday_greet', page: 'calendar', label: 'Birthday greeting note', def: 'An automatic birthday greeting goes out in All Company chat that morning.' },
+  { key: 'calendar.birthday_privacy', page: 'calendar', label: 'Birthday window note', def: 'Only the month and day are shown to the team — never the year.' }
+];
+var SITE_TEXT_BY_KEY = {};
+SITE_TEXT_DEFS.forEach(function(d){ SITE_TEXT_BY_KEY[d.key] = d; });
+var SITE_TEXT_MAX = 2000;
+
+function isPrimaryAdmin(){
+  return session.role === 'admin' && !!session.adminName && session.adminName === STATE.primaryAdmin;
+}
+function siteTextIsCustom(key){
+  var t = STATE.siteTexts;
+  return !!t && Object.prototype.hasOwnProperty.call(t, key) && typeof t[key] === 'string';
+}
+function siteTextRaw(key){
+  if(siteTextIsCustom(key)) return STATE.siteTexts[key];
+  var d = SITE_TEXT_BY_KEY[key];
+  return d ? d.def : '';
+}
+/* Escaped HTML for a text, with {placeholders} filled from vars (whose
+   values are already-safe HTML supplied by the caller). Unknown
+   placeholders are left as typed. Adds the ✎ button for the primary
+   admin when "edit buttons on pages" is on. */
+function siteTextFill(raw, vars){
+  var html = esc(raw).replace(/\n/g, '<br>');
+  return html.replace(/\{([a-z]+)\}/g, function(m, name){
+    return vars && Object.prototype.hasOwnProperty.call(vars, name) ? vars[name] : m;
+  });
+}
+function siteText(key, vars){
+  var html = siteTextFill(siteTextRaw(key), vars);
+  if(ui.siteTextPencils && isPrimaryAdmin() && SITE_TEXT_BY_KEY[key]){
+    html += ' <button type="button" class="st-pencil" data-action="site-text-edit" data-key="' + esc(key) + '" title="Edit this text" aria-label="Edit this text">✎</button>';
+  }
+  return html;
+}
+function siteTextPreviewVars(){
+  var mk = (typeof adminMonth === 'function') ? adminMonth() : null;
+  return {
+    primary: esc(STATE.primaryAdmin || 'the primary admin'),
+    org: esc(STATE.orgName || 'SDI'),
+    name: '<strong>Juan Dela Cruz</strong>',
+    month: '<strong>' + esc(mk && typeof monthKeyLabel === 'function' ? monthKeyLabel(mk) : 'this month') + '</strong>',
+    email: esc(typeof REACTIVATION_EMAIL !== 'undefined' ? REACTIVATION_EMAIL : '')
+  };
+}
+
+function siteTextTabHTML(){
+  if(!isPrimaryAdmin()) return '<div class="card card-pad"><p class="muted" style="margin:0;">Only the primary admin can change website text.</p></div>';
+  var customCount = SITE_TEXT_DEFS.filter(function(d){ return siteTextIsCustom(d.key); }).length;
+  var groups = SITE_TEXT_PAGES.map(function(p){
+    var items = SITE_TEXT_DEFS.filter(function(d){ return d.page === p[0]; });
+    var rows = items.map(function(d){
+      var custom = siteTextIsCustom(d.key);
+      var raw = siteTextRaw(d.key);
+      return '<div class="st-row">' +
+        '<div class="st-row-main">' +
+          '<div class="st-row-label">' + esc(d.label) + (custom ? ' <span class="st-pill">Edited</span>' : '') + '</div>' +
+          '<div class="st-row-text">' + (raw ? siteTextFill(raw, siteTextPreviewVars()) : '<em>(hidden — no text)</em>') + '</div>' +
+        '</div>' +
+        '<button class="btn btn-sm" data-action="site-text-edit" data-key="' + esc(d.key) + '">Edit</button>' +
+      '</div>';
+    }).join('');
+    return '<div class="card"><div class="card-pad" style="padding-bottom:4px;"><h2 style="font-size:16px; margin:0;">' + esc(p[1]) + '</h2></div>' + rows + '</div>';
+  }).join('');
+  return '<div class="stack" style="gap:14px;">' +
+    '<div class="card card-pad stack" style="gap:10px;">' +
+      '<div><h2 style="font-size:18px; margin:0;">Website Text</h2>' +
+      '<p class="muted" style="margin:4px 0 0; font-size:12.5px;">Reword the descriptions shown around the site. Only you, as primary admin, can change these — other admins and employees just see the result, within a few seconds of saving. “Restore default” puts back the original wording. ' +
+      (customCount ? customCount + ' edited so far.' : 'Nothing edited yet.') + '</p></div>' +
+      '<label class="row" style="gap:8px; font-size:13.5px; cursor:pointer;"><input type="checkbox" id="st-pencils-toggle"' + (ui.siteTextPencils ? ' checked' : '') + '> Show ✎ edit buttons next to text on the pages I visit</label>' +
+    '</div>' +
+    groups +
+  '</div>';
+}
+
+function siteTextModalHTML(){
+  if(ui.modal !== 'siteTextEdit') return '';
+  var d = SITE_TEXT_BY_KEY[ui.modalData.key];
+  if(!d || !isPrimaryAdmin()) return '';
+  var draft = typeof ui.modalData.draft === 'string' ? ui.modalData.draft : siteTextRaw(d.key);
+  var custom = siteTextIsCustom(d.key);
+  var pageName = (SITE_TEXT_PAGES.filter(function(p){ return p[0] === d.page; })[0] || [0, ''])[1];
+  var varsHelp = (d.vars || []).map(function(v){ return '<code>{' + esc(v) + '}</code> = ' + esc(SITE_TEXT_VAR_HELP[v] || v); }).join(' · ');
+  return modalShell('Edit website text',
+    '<p class="muted" style="margin:0 0 10px; font-size:12.5px;">' + esc(pageName) + ' → <strong>' + esc(d.label) + '</strong></p>' +
+    '<label class="field">Text' +
+      '<textarea id="st-text" rows="6" maxlength="' + SITE_TEXT_MAX + '">' + esc(draft) + '</textarea>' +
+    '</label>' +
+    '<div class="row" style="justify-content:space-between; gap:8px; margin-top:4px;">' +
+      '<span class="muted" style="font-size:12px;">' + (varsHelp ? 'You can use ' + varsHelp : 'Plain text — line breaks are kept. Leave it empty to hide it.') + '</span>' +
+      '<span class="muted" id="st-count" style="font-size:12px; flex:none;">' + draft.length + ' / ' + SITE_TEXT_MAX + '</span>' +
+    '</div>' +
+    (custom ? '<details style="margin-top:10px;"><summary class="muted" style="font-size:12.5px; cursor:pointer;">Original wording</summary><p class="muted" style="font-size:12.5px; margin:6px 0 0;">' + esc(d.def) + '</p></details>' : ''),
+    (custom ? '<button class="btn btn-ghost" data-action="site-text-reset" style="margin-right:auto;">Restore default</button>' : '') +
+    '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+    '<button class="btn btn-primary" data-action="site-text-save">Save</button>');
+}
+
+function siteTextWireAfterRender(){
+  var t = $('st-text');
+  if(t){
+    t.addEventListener('input', function(){
+      ui.modalData.draft = t.value;
+      var c = $('st-count'); if(c) c.textContent = t.value.length + ' / ' + SITE_TEXT_MAX;
+    });
+  }
+  var tog = $('st-pencils-toggle');
+  if(tog) tog.addEventListener('change', function(){ ui.siteTextPencils = tog.checked; render(); });
+}
+
+function siteTextPersist(payload, mutate, msg){
+  if(!isPrimaryAdmin()){ toast('Only the primary admin can change website text.', 'error'); return; }
+  ui.modal = null; ui.modalData = {};
+  apiPersist('site-text-save', Object.assign({ token: session.token }, payload), mutate, {
+    successMsg: msg,
+    onSuccess: function(data){ if(data && data.siteTexts) STATE.siteTexts = data.siteTexts; render(); }
+  });
+}
+
+var SITE_TEXT_HANDLERS = {
+  'site-text-edit': function(el){
+    if(!isPrimaryAdmin()) return;
+    var key = el.dataset.key;
+    if(!SITE_TEXT_BY_KEY[key]) return;
+    ui.modal = 'siteTextEdit'; ui.modalData = { key: key };
+    render();
+    var t = $('st-text'); if(t){ t.focus(); t.setSelectionRange(t.value.length, t.value.length); }
+  },
+  'site-text-save': function(){
+    var key = ui.modalData.key, t = $('st-text');
+    if(!SITE_TEXT_BY_KEY[key] || !t) return;
+    var text = t.value.replace(/\r\n?/g, '\n').trim();
+    if(text.length > SITE_TEXT_MAX){ toast('That’s too long — keep it under ' + SITE_TEXT_MAX + ' characters.', 'error'); return; }
+    if(!siteTextIsCustom(key) && text === SITE_TEXT_BY_KEY[key].def){ ui.modal = null; ui.modalData = {}; render(); return; }
+    siteTextPersist({ key: key, text: text }, function(S){ S.siteTexts = Object.assign({}, S.siteTexts || {}); S.siteTexts[key] = text; }, 'Text updated');
+  },
+  'site-text-reset': function(){
+    var key = ui.modalData.key;
+    if(!SITE_TEXT_BY_KEY[key]) return;
+    siteTextPersist({ key: key, reset: true }, function(S){ S.siteTexts = Object.assign({}, S.siteTexts || {}); delete S.siteTexts[key]; }, 'Original wording restored');
+  }
+};
+
+(function injectSiteTextStyles(){
+  var css =
+  '.st-pencil{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;padding:0;margin-left:2px;border:1px dashed var(--accent);border-radius:6px;background:var(--accent-soft);color:var(--accent);font-size:12px;line-height:1;cursor:pointer;vertical-align:middle;}' +
+  '.st-pencil:hover{background:var(--accent);color:#fff;}' +
+  '.st-row{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;padding:12px 18px;border-top:1px solid var(--line);}' +
+  '.st-row-main{min-width:0;flex:1;}' +
+  '.st-row-label{font-weight:600;font-size:13.5px;}' +
+  '.st-row-text{font-size:12.5px;color:var(--ink-soft);margin-top:3px;overflow-wrap:anywhere;}' +
+  '.st-pill{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 7px;border-radius:999px;background:var(--accent-soft);color:var(--accent);vertical-align:middle;margin-left:4px;}' +
+  '#st-text{width:100%;min-height:120px;resize:vertical;font:inherit;font-weight:400;}' +
+  '@media (max-width:600px){.st-row{padding:12px 14px;}}';
+  var s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+})();
+
+Object.assign(handlers, SITE_TEXT_HANDLERS);
 
 /* ============================================================
    BOOT
