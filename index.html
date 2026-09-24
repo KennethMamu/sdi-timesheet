@@ -1981,8 +1981,8 @@ function renderHeader(){
     '<div class="topbar">' +
       '<img class="logo" src="' + LOGO_SRC + '" alt="' + esc(STATE.orgName) + ' logo">' +
       '<div class="org-meta">' +
-        '<span class="org-name">SDI Timesheet</span>' +
-        '<span class="org-sub">Automated Timesheet</span>' +
+        '<span class="org-name">' + siteText('site.title') + '</span>' +
+        '<span class="org-sub">' + siteText('site.subtitle') + '</span>' +
       '</div>' +
       who +
     '</div>';
@@ -1990,7 +1990,7 @@ function renderHeader(){
 
 function renderFooter(){
   var writeNote = canWrite ? '' : ' · view-only in this window';
-  return '<div class="footer-note">' + esc(STATE.orgName) + ' — automated timesheet' + writeNote + '</div>';
+  return '<div class="footer-note">' + siteText('site.footer', { org: esc(STATE.orgName) }) + writeNote + '</div>';
 }
 
 function renderMain(){
@@ -3170,7 +3170,7 @@ function renderModalInto(app){
         '</div>' +
         '<label class="field">Shift<select id="edit-emp-shift">' + editShiftOptions + '</select></label>' +
         '<label class="field">Birthday<input type="date" id="edit-emp-birthday" max="' + calTodayYmd() + '" value="' + esc(editEmp && editEmp.birthday ? editEmp.birthday : '') + '"></label>' +
-        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Optional. Only the month and day show on the company calendar; a greeting is posted in All Company chat on the day.</p>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Optional. Only the month and day show on the company calendar; a greeting is posted in Company GC chat on the day.</p>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-employee-submit">Save</button>'
@@ -4405,7 +4405,7 @@ document.addEventListener('click', function(e){
    TEAM CHAT (v43)
    ------------------------------------------------------------
    Teams/Messenger-style messaging on the same Supabase backend:
-   direct messages between anyone, an "All Company" chat, and
+   direct messages between anyone, an "Company GC" chat, and
    admin-managed group chats (optionally tied to a shift, so
    everyone on that shift is in it automatically). Reactions,
    emoji, GIFs, photos/videos/files (straight from the phone's
@@ -4487,7 +4487,7 @@ function chatConv(id){
 function chatOtherKey(c){ return (c.members || []).filter(function(k){ return !chat.me || k !== chat.me.key; })[0]; }
 function chatTitle(c){
   if(!c) return '';
-  if(c.kind === 'company') return c.name || 'All Company';
+  if(c.kind === 'company') return c.name || 'Company GC';
   if(c.kind === 'group') return c.name || 'Group';
   var other = chatOtherKey(c);
   return other ? chatPersonName(other) : 'Direct message';
@@ -4564,7 +4564,7 @@ function chatUpdateBadges(){
     el.textContent = n ? (n > 99 ? '99+' : String(n)) : '';
     if(n) el.removeAttribute('hidden'); else el.setAttribute('hidden', '');
   });
-  try{ document.title = (n ? '(' + n + ') ' : '') + 'SDI Timesheet'; }catch(e){}
+  try{ document.title = (n ? '(' + n + ') ' : '') + siteTextTitle(); }catch(e){}
 }
 function chatApiError(err){
   var map = {
@@ -4963,6 +4963,7 @@ function chatMainHTML(){
   var isAdmin = session.role === 'admin';
   if(isAdmin){
     tools = (c.kind === 'group' ? '<button type="button" class="btn btn-sm" data-action="chat-group-edit-open">Manage group</button>' : '') +
+      (c.kind === 'company' ? '<button type="button" class="btn btn-sm" data-action="chat-company-rename-open">Rename</button>' : '') +
       (c.kind === 'company' ? '<button type="button" class="btn btn-sm" data-action="chat-freeze-toggle" data-id="' + esc(c.id) + '" data-frozen="' + (c.frozen ? '0' : '1') + '">' + (c.frozen ? 'Unfreeze' : 'Freeze') + '</button>' : '') +
       '<button type="button" class="btn btn-sm" data-action="chat-report-open" data-id="' + esc(c.id) + '">Download report</button>';
   }
@@ -5066,6 +5067,8 @@ function chatSearchGifs(q){
   });
 }
 function chatWireAfterRender(){
+  var ccn = $('chat-company-name');
+  if(ccn) ccn.addEventListener('keydown', function(e){ if(e.key === 'Enter'){ e.preventDefault(); CHAT_HANDLERS['chat-company-rename-save'](); } });
   var input = $('chat-input');
   if(input){
     input.addEventListener('input', function(){ if(chat.activeId) chat.drafts[chat.activeId] = input.value; chatAutosize(input); });
@@ -5334,6 +5337,15 @@ function chatModalHTML(){
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="chat-group-save">Save</button>');
   }
+  if(ui.modal === 'chatCompanyRename'){
+    var cc = chatConv(ui.modalData.id);
+    if(!cc) return '';
+    return modalShell('Rename company chat',
+      '<label class="field">Chat name<input type="text" id="chat-company-name" maxlength="80" value="' + esc(cc.name || '') + '"></label>' +
+      '<p class="muted" style="margin:8px 0 0; font-size:12.5px;">Everyone at ' + esc(STATE.orgName || 'SDI') + ' is always in this chat. The new name shows for everyone right away.</p>',
+      '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+      '<button class="btn btn-primary" data-action="chat-company-rename-save">Save</button>');
+  }
   if(ui.modal === 'chatGroupDelete'){
     var dgc = chatConv(ui.modalData.id);
     return modalShell('Delete group chat',
@@ -5507,6 +5519,28 @@ var CHAT_HANDLERS = {
       chatLoadList(true);
     }).catch(function(err){ toast(chatApiError(err), 'error'); });
   },
+  'chat-company-rename-open': function(){
+    var c = chatConv(chat.activeId);
+    if(!c || c.kind !== 'company' || session.role !== 'admin') return;
+    ui.modal = 'chatCompanyRename'; ui.modalData = { id: c.id }; render();
+    var inp = $('chat-company-name'); if(inp){ inp.focus(); inp.select(); }
+  },
+  'chat-company-rename-save': function(){
+    var id = ui.modalData.id, inp = $('chat-company-name');
+    var name = inp ? inp.value.trim() : '';
+    if(!name){ toast('Give the chat a name.', 'error'); return; }
+    var c = chatConv(id), old = c ? c.name : null;
+    if(c) c.name = name;
+    ui.modal = null; ui.modalData = {}; render();
+    callApi('chat-update-group', { token: session.token, conversationId: id, name: name }).then(function(){
+      toast('Chat renamed', 'success');
+      chatLoadList(true);
+    }).catch(function(err){
+      if(c) c.name = old;
+      render();
+      toast(chatApiError(err), 'error');
+    });
+  },
   'chat-group-archive-open': function(){ ui.modal = 'chatGroupArchive'; render(); },
   'chat-freeze-toggle': function(el){
     var id = el.dataset.id, frozen = el.dataset.frozen === '1';
@@ -5611,7 +5645,7 @@ function chatReportHTMLParts(report, media){
     '<div class="rep-note">Company record. Edited messages list every earlier version; deleted messages are shown with their original text.</div></div>' }];
   (report.conversations || []).forEach(function(c){
     var members = (c.members || []).map(function(k){ return nameOf(k); });
-    var title = c.kind === 'company' ? (c.name || 'All Company') : c.kind === 'group' ? 'Group: ' + (c.name || '') : 'Direct message: ' + members.join(' ↔ ');
+    var title = c.kind === 'company' ? (c.name || 'Company GC') : c.kind === 'group' ? 'Group: ' + (c.name || '') : 'Direct message: ' + members.join(' ↔ ');
     blocks.push({ newPage: true, html:
       '<div class="rep-conv"><div class="rep-conv-title">' + esc(title) +
         (c.deletedAt ? ' <span class="rep-tag del">DELETED by ' + esc(c.deletedBy || '?') + ' · ' + esc(chatFullStamp(c.deletedAt)) + '</span>' : (c.archived ? ' <span class="rep-tag">ARCHIVED</span>' : '')) +
@@ -5811,7 +5845,7 @@ function chatJpegPagesToPdf(pages){
    birthdays (month/day only). Everyone can view it; admins add,
    edit and remove events and holidays. Events/holidays marked
    "post a greeting" and every birthday get an automatic message
-   in the All Company chat on the day (8:05 AM Manila), handled
+   in the Company GC chat on the day (8:05 AM Manila), handled
    entirely by the server. Refreshes itself every minute while open.
    ============================================================ */
 var cal = { month: null, data: null, key: null, loading: false, error: null, selected: null, lastAt: 0 };
@@ -5951,7 +5985,7 @@ function calendarPageHTML(){
 
   var emp = session.role === 'employee' ? getEmployee(session.employeeId) : null;
   var bdayCard = emp ? '<div class="card card-pad stack" style="gap:6px;"><div style="font-weight:600;">Your birthday</div>' +
-      '<div class="muted" style="font-size:13px;">' + (emp.birthday ? esc(MONTH_NAMES[Number(emp.birthday.slice(5, 7)) - 1] + ' ' + Number(emp.birthday.slice(8, 10))) + ' — the team gets a reminder and you get a greeting in All Company chat.' : 'Add it so the team can greet you on your day. Only the month and day are shown.') + '</div>' +
+      '<div class="muted" style="font-size:13px;">' + (emp.birthday ? esc(MONTH_NAMES[Number(emp.birthday.slice(5, 7)) - 1] + ' ' + Number(emp.birthday.slice(8, 10))) + ' — the team gets a reminder and you get a greeting in Company GC chat.' : 'Add it so the team can greet you on your day. Only the month and day are shown.') + '</div>' +
       '<div><button type="button" class="btn btn-sm" data-action="cal-bday-open">' + (emp.birthday ? 'Change' : 'Add birthday') + '</button></div></div>' : '';
 
   return '<div class="stack" style="gap:16px;">' +
@@ -5995,7 +6029,7 @@ function calEventFormHTML(e, date){
       '<label class="field">Ends<input type="time" id="cal-etime" value="' + esc(e.endTime || '') + '"></label>' +
     '</div>' +
     '<label class="field">Details<textarea id="cal-desc" rows="3" maxlength="2000" placeholder="Where, what to bring, etc.">' + esc(e.description || '') + '</textarea></label>' +
-    '<label style="display:flex; gap:8px; align-items:center; font-size:13.5px;"><input type="checkbox" id="cal-greet"' + (e.greet ? ' checked' : '') + '> Post automatically in All Company chat on the day (8:05 AM)</label>' +
+    '<label style="display:flex; gap:8px; align-items:center; font-size:13.5px;"><input type="checkbox" id="cal-greet"' + (e.greet ? ' checked' : '') + '> Post automatically in Company GC chat on the day (8:05 AM)</label>' +
     '<label class="field" id="cal-greet-wrap"' + (e.greet ? '' : ' hidden') + '>Message (optional)<textarea id="cal-greeting" rows="2" maxlength="500" placeholder="Leave blank for a standard greeting / reminder">' + esc(e.greeting || '') + '</textarea></label>' +
   '</div>';
 }
@@ -6235,6 +6269,7 @@ Object.assign(handlers, CHAT_HANDLERS, CAL_HANDLERS);
    {placeholders} like {primary} so names stay current if they change. */
 
 var SITE_TEXT_PAGES = [
+  ['site', 'Site name & header (every page)'],
   ['landing', 'Welcome page (before signing in)'],
   ['signin', 'Sign-in screens'],
   ['employee', 'Employee dashboard'],
@@ -6252,6 +6287,10 @@ var SITE_TEXT_VAR_HELP = {
   email: 'the reactivation email address'
 };
 var SITE_TEXT_DEFS = [
+  { key: 'site.title', page: 'site', label: 'Site name (top bar and browser tab)', def: 'SDI Timesheet' },
+  { key: 'site.subtitle', page: 'site', label: 'Line under the site name', def: 'Automated Timesheet' },
+  { key: 'site.footer', page: 'site', label: 'Footer at the bottom of every page', def: '{org} — automated timesheet', vars: ['org'] },
+
   { key: 'landing.title', page: 'landing', label: 'Main heading', def: 'Who’s checking their timesheet?' },
   { key: 'landing.intro', page: 'landing', label: 'Text under the main heading', def: 'Search your name to view your own hours and attendance. Your timesheet is private to you and admins.' },
   { key: 'landing.admin_title', page: 'landing', label: 'Admin box — heading', def: 'Manage the timesheet' },
@@ -6286,8 +6325,8 @@ var SITE_TEXT_DEFS = [
   { key: 'messages.group_shift', page: 'messages', label: 'New group — shift note', def: 'With a shift picked, everyone on that shift is in the group automatically — including people who join or move to that shift later. You can still add anyone else below.' },
   { key: 'messages.report', page: 'messages', label: 'Chat report window', def: 'Downloads a PDF with every message in full — each earlier version of edited messages, deleted messages (with who deleted them and when), reactions, photos and GIFs. Videos and other files are listed by name.' },
 
-  { key: 'calendar.admin_help', page: 'calendar', label: 'Calendar note (admins)', def: 'Holidays and events with “post a greeting” on, and every birthday on file, get an automatic message in All Company chat at 8:05 AM on the day. Add birthdays from People & Access → Edit (employees can also add their own).' },
-  { key: 'calendar.birthday_greet', page: 'calendar', label: 'Birthday greeting note', def: 'An automatic birthday greeting goes out in All Company chat that morning.' },
+  { key: 'calendar.admin_help', page: 'calendar', label: 'Calendar note (admins)', def: 'Holidays and events with “post a greeting” on, and every birthday on file, get an automatic message in Company GC chat at 8:05 AM on the day. Add birthdays from People & Access → Edit (employees can also add their own).' },
+  { key: 'calendar.birthday_greet', page: 'calendar', label: 'Birthday greeting note', def: 'An automatic birthday greeting goes out in Company GC chat that morning.' },
   { key: 'calendar.birthday_privacy', page: 'calendar', label: 'Birthday window note', def: 'Only the month and day are shown to the team — never the year.' }
 ];
 var SITE_TEXT_BY_KEY = {};
@@ -6386,7 +6425,15 @@ function siteTextModalHTML(){
     '<button class="btn btn-primary" data-action="site-text-save">Save</button>');
 }
 
+function siteTextTitle(){
+  return siteTextRaw('site.title').replace(/\s+/g, ' ').trim() || 'SDI Timesheet';
+}
 function siteTextWireAfterRender(){
+  // Browser tab title follows the editable site name (with the unread
+  // message count in front, same as the chat badge).
+  var n = 0; try{ n = chatUnreadTotal() || 0; }catch(e){}
+  var t = (n ? '(' + n + ') ' : '') + siteTextTitle();
+  if(document.title !== t) document.title = t;
   var t = $('st-text');
   if(t){
     t.addEventListener('input', function(){
