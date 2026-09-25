@@ -2,6 +2,7 @@
 
 
 
+
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SDI Timesheet</title>
@@ -477,6 +478,7 @@ function applyBootstrapState(data){
   STATE.shifts = data.shifts || {};
   STATE.notifications = [];
   STATE.myNotifications = [];
+  STATE.birthdaysToday = data.birthdaysToday || [];
 }
 function applyServerState(data){
   if(data && data.siteTexts && typeof data.siteTexts === 'object') STATE.siteTexts = data.siteTexts;
@@ -485,6 +487,7 @@ function applyServerState(data){
   STATE.orgName = data.orgName;
   STATE.primaryAdmin = data.primaryAdmin;
   STATE.shifts = data.shifts || STATE.shifts || {};
+  if(Array.isArray(data.birthdaysToday)) STATE.birthdaysToday = data.birthdaysToday;
   if(data.role === 'admin'){
     STATE.admins = data.admins || [];
     STATE.adminEmails = data.adminEmails || {};
@@ -648,7 +651,7 @@ function userIsEditing(){
    response could be carrying data from before that write and would
    silently roll it back the moment it landed. */
 function shouldSkipPoll(){
-  return userIsEditing() || pendingWriteCount > 0 || entryAutosavePendingCount() > 0;
+  return (typeof rowMenuEl !== 'undefined' && !!rowMenuEl) || userIsEditing() || pendingWriteCount > 0 || entryAutosavePendingCount() > 0;
 }
 function safeRender(){
   if(userIsEditing()) return;
@@ -1005,7 +1008,7 @@ function refreshEntriesSaveStatus(){
    the admin picks by hand (e.g. Present, to excuse a late arrival) is
    never silently flipped back to Late. Writes any recalculated status /
    Min Late straight back into the row so the screen matches what's saved. */
-function readEntryRow(tr, changed, requiredTimeIn){
+function readEntryRow(tr, changed, requiredTimeIn, graceMin){
   var statusEl = tr.querySelector('.entry-status');
   var timeInEl = tr.querySelector('.entry-timein');
   var minLateEl = tr.querySelector('.entry-minlate');
@@ -1017,7 +1020,7 @@ function readEntryRow(tr, changed, requiredTimeIn){
   if(changed === 'timein' && status !== 'A' && status !== 'OFF'){
     if(!timeIn){
       if(status === 'L'){ status = ''; minLateVal = ''; }
-    } else if(diff !== null && diff > 0){
+    } else if(diff !== null && diff > (graceMin || 0)){
       status = 'L'; minLateVal = String(diff);
     } else if(status === 'L' || status === ''){
       status = 'P'; minLateVal = '';
@@ -1062,7 +1065,12 @@ function scheduleEntryRowSave(tr, changed, immediate){
   // Lateness is recalculated right away (not after the delay) so the
   // Status/Min Late cells update the moment the time is entered.
   var emp = getEmployee(empId);
-  if(changed === 'timein' || changed === 'status') readEntryRow(tr, changed, emp ? shiftRequiredTimeIn(emp.shift) : null);
+  // v45: required time-in and grace come from the shift this person is
+  // scheduled on that particular day (weekly pattern / date change).
+  if(changed === 'timein' || changed === 'status'){
+    var dShift = emp ? empShiftOn(emp, monthKey, parseInt(day, 10)) : null;
+    readEntryRow(tr, changed, emp ? empRequiredTimeInOn(emp, monthKey, parseInt(day, 10)) : null, dShift && dShift.code ? shiftGraceMinutes(dShift.code) : 0);
+  }
   var key = empId + '|' + monthKey + '|' + day;
   var existing = entryAutosaveTimers[key];
   if(existing) clearTimeout(existing.timer);
@@ -1597,13 +1605,16 @@ function attendanceEmployeeRowHTML(emp, shift, monthKey){
   var row = xlTd(esc(formatName(emp.name)), XL_CELL+'font-weight:600;');
   var p=0, a=0;
   for(var d=1; d<=mi.daysInMonth; d++){
-    if(!isShiftWorkDay(shift, monthKey, d)){
+    var entry = getEntry(emp.id, monthKey, d);
+    var s = entry ? (entry.status || '') : '';
+    // v45: a day with a recorded status always shows it, even if that day
+    // is now outside the person's schedule; otherwise unscheduled = OFF.
+    if(s !== 'P' && s !== 'L' && s !== 'A' && empShiftOn(emp, monthKey, d).off){
       row += xlTd('OFF', XL_CELL+'background:'+XL.offSoft+';color:'+XL.off+';text-align:center;font-size:10.5px;');
       continue;
     }
-    var entry = getEntry(emp.id, monthKey, d);
-    var s = entry ? (entry.status || '') : '';
-    if(s==='P'){ p++; row += xlTd('P', XL_CELL+'background:'+XL.goodSoft+';color:'+XL.good+';font-weight:700;text-align:center;'); }
+    if(s==='L'){ p++; row += xlTd('L', XL_CELL+'background:#F6E9D8;color:#B8752A;font-weight:700;text-align:center;'); }
+    else if(s==='P'){ p++; row += xlTd('P', XL_CELL+'background:'+XL.goodSoft+';color:'+XL.good+';font-weight:700;text-align:center;'); }
     else if(s==='A'){ a++; row += xlTd('A', XL_CELL+'background:'+XL.badSoft+';color:'+XL.bad+';font-weight:700;text-align:center;'); }
     else { row += xlTd('', XL_CELL+'text-align:center;'); }
   }
@@ -1668,7 +1679,7 @@ function attendanceGridExcelHTML(monthKey){
   html += '<tr>' + xlTd('', 'border:none;padding:6px;', totalCols) + '</tr>';
   html += attendanceTotalRowHTML('Company Total', mi.daysInMonth, companyP, companyA, XL_CELL+'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';');
 
-  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside that shift’s schedule.');
+  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, L = Late (counted as present), A = Absent, OFF = day that person isn’t scheduled.');
 
   return excelHTMLDoc('Attendance Schedule — ' + monthKeyLabel(monthKey), html);
 }
@@ -1744,7 +1755,7 @@ function employeeAttendanceExcelHTML(emp, monthKey){
   html += '<tr>' + xlTd(esc(ATTENDANCE_GROUP_BANNER[shift] || emp.shiftLabel || ''), 'background:'+XL.accent+';color:#fff;font-weight:700;padding:7px 9px;font-size:12.5px;', totalCols) + '</tr>';
   html += attendanceDayHeaderRowHTML(monthKey);
   html += attendanceEmployeeRowHTML(emp, shift, monthKey).html;
-  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, A = Absent, OFF = day outside this shift’s schedule.');
+  html += attendanceLegendRowHTML(totalCols, 'Legend: P = Present, L = Late (counted as present), A = Absent, OFF = day outside this shift’s schedule.');
 
   return excelHTMLDoc('Attendance — ' + formatName(emp.name) + ' — ' + monthKeyLabel(monthKey), html);
 }
@@ -1825,6 +1836,7 @@ function shiftInfo(code){ return (STATE.shifts && STATE.shifts[code]) || {}; }
 function shiftName(code){ return shiftInfo(code).name || code; }
 function shiftScheduleLabel(code){ return shiftInfo(code).scheduleLabel || SHIFT_LABELS[code] || ''; }
 function shiftRequiredTimeIn(code){ return shiftInfo(code).requiredTimeIn || null; }
+function shiftGraceMinutes(code){ return Number(shiftInfo(code).graceMinutes) || 0; }
 function toMinutesOfDay(hhmm){
   if(!hhmm) return null;
   var p = String(hhmm).split(':');
@@ -2070,7 +2082,8 @@ function viewLanding(){
   var err = ui.landingSearch.error ? '<p style="color:var(--bad); font-size:12.5px; margin:0;">' + esc(ui.landingSearch.error) + '</p>' : '';
   return '' +
   '<div class="center-wrap" style="padding-top:8px;">' +
-    '<div class="stack" style="max-width:440px; width:100%;">' +
+    '<div class="stack" style="max-width:' + ((STATE.birthdaysToday || []).length && !bdayIsHidden() ? 620 : 440) + 'px; width:100%;">' +
+      birthdayBannerHTML() +
       '<div class="stack" style="text-align:center; gap:6px;">' +
         '<span class="eyebrow">' + esc(STATE.orgName) + '</span>' +
         '<h1 class="section-title" style="font-size:30px;">' + siteText('landing.title') + '</h1>' +
@@ -2254,7 +2267,9 @@ function viewAdminLogin(){
 function punchCardHTML(emp, monthKey, today){
   if(monthKey !== currentMonthKey() || today === -1) return '';
   var entry = getEntry(emp.id, monthKey, today) || {};
-  var dateLabel = fmtDateShort(monthKey, today) + ' · ' + weekdayLong(monthKey, today);
+  var todayShift = empShiftOn(emp, monthKey, today);
+  var dateLabel = fmtDateShort(monthKey, today) + ' · ' + weekdayLong(monthKey, today) +
+    (todayShift.off ? ' · not scheduled' : ' · ' + shiftName(todayShift.code) + (shiftRequiredTimeIn(todayShift.code) ? ' ' + fmtTime12(shiftRequiredTimeIn(todayShift.code)) : ''));
 
   if(!entry.timeIn){
     return '<div class="card card-pad row punch-card" style="justify-content:space-between;">' +
@@ -2333,7 +2348,7 @@ function viewEmployeeDash(emp){
     var hasConcernOpen = myConcerns.some(function(c){ return c.day === d && c.month === monthKey && c.status === 'open'; });
     rows += '<tr class="' + (weekendCls+todayCls).trim() + '">' +
       '<td>' + esc(fmtDateShort(monthKey, d)) + '</td>' +
-      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + '</td>' +
+      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + shiftDayTagHTML(emp, monthKey, d) + '</td>' +
       '<td>' + statusPill + '</td>' +
       '<td class="num mono">' + esc(entry.timeIn ? fmtTime12(entry.timeIn) : '—') + '</td>' +
       '<td class="num mono">' + esc(entry.timeOut ? fmtTime12(entry.timeOut) : '—') + '</td>' +
@@ -2359,13 +2374,14 @@ function viewEmployeeDash(emp){
 
   return '' +
   '<div class="stack" style="gap:24px;">' +
+    birthdayBannerHTML() +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
       '<div class="row" style="gap:14px; align-items:center;">' +
         avatarHTML(emp.photoDataUrl, emp.name, 60) +
         '<div>' +
           '<span class="eyebrow">' + esc(emp.department || '') + ' · ' + esc(emp.position || '') + '</span>' +
           '<h1 class="section-title" style="font-size:28px;">' + esc(formatName(emp.name)) + '</h1>' +
-          '<p class="muted" style="margin:2px 0 0;">' + esc(emp.shiftLabel || '') + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
+          '<p class="muted" style="margin:2px 0 0;">' + esc(empScheduleHeadline(emp)) + ' · Manager: ' + esc(formatName(emp.manager || '')) + '</p>' +
         '</div>' +
       '</div>' +
       '<div class="row" style="flex-wrap:wrap; align-items:center;">' +
@@ -2382,6 +2398,8 @@ function viewEmployeeDash(emp){
     '</div>' +
 
     punchCardHTML(emp, monthKey, today) +
+
+    myScheduleCardHTML(emp) +
 
     '<div class="grid grid-4">' +
       statCard('Days Present', t.daysPresent, 'good') +
@@ -2409,7 +2427,7 @@ function viewEmployeeDash(emp){
       concernsList +
     '</div>' +
 
-    companyFormsCardHTML() +
+    companyFormsCardHTMLV45() +
 
     '<div class="card card-pad stack">' +
       '<h2 style="font-size:18px;">My requests</h2>' +
@@ -2573,7 +2591,7 @@ function viewAdminDash(){
   else if(ui.adminTab === 'concerns') body = adminConcernsTab();
   else if(ui.adminTab === 'notifications') body = adminNotificationsTab();
   else if(ui.adminTab === 'people') body = adminPeopleTab();
-  else if(ui.adminTab === 'downloads') body = adminDownloadsTab();
+  else if(ui.adminTab === 'downloads') body = adminDownloadsTabV45();
   else if(ui.adminTab === 'messages') body = chatPageHTML();
   else if(ui.adminTab === 'calendar') body = calendarPageHTML();
   else if(ui.adminTab === 'sitetext') body = siteTextTabHTML();
@@ -2581,6 +2599,7 @@ function viewAdminDash(){
   var showMonthNav = ui.adminTab !== 'messages' && ui.adminTab !== 'calendar' && ui.adminTab !== 'sitetext';
 
   return '<div class="stack" style="gap:18px;">' +
+    birthdayBannerHTML() +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
       '<div><span class="eyebrow">Admin</span><h1 class="section-title" style="font-size:26px;">' + esc(STATE.orgName) + '</h1></div>' +
       (showMonthNav ? monthNavHTML('admin', adminMonth()) : '') +
@@ -2690,7 +2709,7 @@ function adminEntriesTab(){
     var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
     rows += '<tr class="' + weekendCls.trim() + '" data-day="' + d + '">' +
       '<td>' + esc(fmtDateShort(monthKey, d)) + '</td>' +
-      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + '</td>' +
+      '<td class="muted">' + esc(weekdayShort(monthKey, d)) + shiftDayTagHTML(emp, monthKey, d) + '</td>' +
       '<td><select class="entry-status" style="min-width:90px;">' +
         ['', 'P','L','A','OFF'].map(function(s){
           var sel = (entry.status || '') === s ? ' selected' : '';
@@ -2989,13 +3008,13 @@ function adminPeopleTab(){
         '<h2 style="font-size:17px;">Employees</h2>' +
         '<button class="btn btn-sm btn-primary" data-action="add-employee-open">+ Add Employee</button>' +
       '</div>' +
-      '<div class="card-pad row" style="align-items:center; gap:10px; padding-top:0; padding-bottom:12px;">' +
+      '<div class="card-pad people-tools" style="padding-top:0; padding-bottom:12px;">' +
+        '<input type="search" id="people-filter" placeholder="Search name, position, shift…" autocomplete="off" aria-label="Search employees" value="' + esc(ui.peopleFilter || '') + '">' +
         '<label class="muted" for="people-sort-select" style="font-size:12px;">Sort by</label>' +
         sortSelect +
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table><thead><tr><th>Name</th><th>Email</th><th>Department</th><th>Position</th><th>Shift</th><th>Passcode</th><th></th><th></th><th></th><th></th><th></th></tr></thead>' +
-        '<tbody>' + empRows + '</tbody></table>' +
+        employeesTableHTML(sortedEmployees) +
       '</div>' +
       '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">' + siteText('people.employees', { email: esc(REACTIVATION_EMAIL) }) + '</p></div>' +
     '</div>' +
@@ -3006,7 +3025,7 @@ function adminPeopleTab(){
         '<button class="btn btn-sm btn-primary" data-action="add-admin-open">+ Add Admin</button>' +
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table class="compact"><thead><tr><th>Name</th><th>Email</th><th>Passcode</th><th>Announcements</th><th></th><th></th><th></th><th></th></tr></thead><tbody>' + adminRows + '</tbody></table>' +
+        adminsTableHTML() +
       '</div>' +
       '<div class="card-pad" style="padding-top:10px;"><p class="muted" style="margin:0; font-size:12px;">' + siteText('people.admins', { primary: esc(STATE.primaryAdmin || 'the primary admin') }) + '</p></div>' +
     '</div>' +
@@ -3016,13 +3035,14 @@ function adminPeopleTab(){
         '<button class="btn btn-sm btn-primary" data-action="add-shift-open">+ Add Shift</button>' +
       '</div>' +
       '<div class="table-wrap" style="border:none; border-radius:0; border-top:1px solid var(--line);">' +
-        '<table><thead><tr><th>Shift</th><th>Schedule</th><th>Work Days</th><th>Required Time In</th><th></th></tr></thead><tbody>' +
+        '<table><thead><tr><th>Shift</th><th>Schedule</th><th>Work Days</th><th>Required Time In</th><th>Grace</th><th></th></tr></thead><tbody>' +
         shiftCodes().map(function(code){
           return '<tr>' +
             '<td><span class="badge-shift">' + esc(shiftName(code)) + '</span></td>' +
             '<td class="muted">' + esc(shiftScheduleLabel(code)) + '</td>' +
             '<td class="muted">' + esc(shiftWorkDaysLabel(code)) + '</td>' +
             '<td class="mono">' + esc(shiftRequiredTimeIn(code) ? fmtTime12(shiftRequiredTimeIn(code)) : '—') + '</td>' +
+            '<td class="mono">' + esc(shiftGraceMinutes(code) ? shiftGraceMinutes(code) + ' min' : 'None') + '</td>' +
             '<td><div class="row" style="gap:6px; flex-wrap:nowrap;">' +
               '<button class="btn btn-sm" data-action="edit-shift-open" data-code="' + esc(code) + '">Edit</button>' +
               '<button class="btn btn-sm btn-danger" data-action="delete-shift-open" data-code="' + esc(code) + '">Remove</button>' +
@@ -3215,7 +3235,11 @@ function renderModalInto(app){
       '<div class="stack" style="gap:12px;">' +
         '<label class="field">Shift name <span class="req">*</span><input type="text" id="edit-shift-name" value="' + esc(shiftName(shiftCode)) + '"></label>' +
         '<label class="field">Schedule label<input type="text" id="edit-shift-schedule" placeholder="e.g. 10:00 AM – 5:00 PM" value="' + esc(shiftScheduleLabel(shiftCode)) + '"></label>' +
-        '<label class="field">Required time in<input type="time" id="edit-shift-required" value="' + esc(shiftRequiredTimeIn(shiftCode) || '') + '"></label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Required time in<input type="time" id="edit-shift-required" value="' + esc(shiftRequiredTimeIn(shiftCode) || '') + '"></label>' +
+          '<label class="field">Grace period (minutes)<input type="number" min="0" max="240" step="1" id="edit-shift-grace" value="' + esc(shiftGraceMinutes(shiftCode)) + '"></label>' +
+        '</div>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">' + siteText('people.grace_help') + '</p>' +
         '<label class="field">Work days' + dayCheckboxesHTML('edit-shift', shiftWorkDays(shiftCode)) + '</label>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
@@ -3228,7 +3252,11 @@ function renderModalInto(app){
         '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Short, no spaces — used internally to identify this shift. Can\'t be changed later.</p>' +
         '<label class="field">Shift name <span class="req">*</span><input type="text" id="new-shift-name" placeholder="e.g. Night Shift"></label>' +
         '<label class="field">Schedule label<input type="text" id="new-shift-schedule" placeholder="e.g. 8:00 PM – 12:00 AM"></label>' +
-        '<label class="field">Required time in<input type="time" id="new-shift-required"></label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Required time in<input type="time" id="new-shift-required"></label>' +
+          '<label class="field">Grace period (minutes)<input type="number" min="0" max="240" step="1" id="new-shift-grace" value="0"></label>' +
+        '</div>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">' + siteText('people.grace_help') + '</p>' +
         '<label class="field">Work days <span class="req">*</span>' + dayCheckboxesHTML('new-shift', []) + '</label>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
@@ -3368,6 +3396,9 @@ function renderModalInto(app){
   } else if(ui.modal === 'siteNameEdit'){
     html = siteNameModalHTML();
     if(!html){ ui.modal = null; return; }
+  } else if(ui.modal === 'empSchedule'){
+    html = empScheduleModalHTML();
+    if(!html){ ui.modal = null; return; }
   } else if(ui.modal === 'installHelp'){
     html = installHelpModalHTML();
   } else {
@@ -3389,6 +3420,7 @@ function modalShell(title, body, foot){
 }
 
 function wireInputsAfterRender(){
+  v45WireAfterRender();
   chatWireAfterRender();
   calWireAfterRender();
   siteTextWireAfterRender();
@@ -4278,16 +4310,19 @@ var handlers = {
     if(!name){ toast('Please enter a shift name.', 'error'); return; }
     var scheduleLabel = (($('edit-shift-schedule')||{}).value || '').trim();
     var requiredTimeIn = ($('edit-shift-required')||{}).value || '';
+    var graceMinutes = parseInt(($('edit-shift-grace')||{}).value || '0', 10) || 0;
+    if(graceMinutes < 0 || graceMinutes > 240){ toast('Grace period must be between 0 and 240 minutes.', 'error'); return; }
     var workDays = readCheckedDays('edit-shift');
     if(!workDays.length){ toast('Pick at least one work day.', 'error'); return; }
     ui.modal = null;
-    apiPersist('update-shift-settings', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, workDays: workDays },
+    apiPersist('update-shift-settings', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, graceMinutes: graceMinutes, workDays: workDays },
       function(s){
         if(!s.shifts) s.shifts = {};
         if(!s.shifts[code]) s.shifts[code] = { code: code };
         s.shifts[code].name = name;
         s.shifts[code].scheduleLabel = scheduleLabel || null;
         s.shifts[code].requiredTimeIn = requiredTimeIn || null;
+        s.shifts[code].graceMinutes = graceMinutes;
         s.shifts[code].workDays = workDays;
       },
       {
@@ -4310,13 +4345,15 @@ var handlers = {
     if(!name){ toast('Please enter a shift name.', 'error'); return; }
     var scheduleLabel = (($('new-shift-schedule')||{}).value || '').trim();
     var requiredTimeIn = ($('new-shift-required')||{}).value || '';
+    var graceMinutes = parseInt(($('new-shift-grace')||{}).value || '0', 10) || 0;
+    if(graceMinutes < 0 || graceMinutes > 240){ toast('Grace period must be between 0 and 240 minutes.', 'error'); return; }
     var workDays = readCheckedDays('new-shift');
     if(!workDays.length){ toast('Pick at least one work day.', 'error'); return; }
     ui.modal = null;
-    apiPersist('add-shift', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, workDays: workDays },
+    apiPersist('add-shift', { token: session.token, code: code, name: name, scheduleLabel: scheduleLabel, requiredTimeIn: requiredTimeIn, graceMinutes: graceMinutes, workDays: workDays },
       function(s){
         if(!s.shifts) s.shifts = {};
-        s.shifts[code] = { code: code, name: name, scheduleLabel: scheduleLabel || null, requiredTimeIn: requiredTimeIn || null, workDays: workDays };
+        s.shifts[code] = { code: code, name: name, scheduleLabel: scheduleLabel || null, requiredTimeIn: requiredTimeIn || null, graceMinutes: graceMinutes, workDays: workDays };
       },
       {
         successMsg: 'Shift added',
@@ -7425,6 +7462,722 @@ function positionStatusMenu(){
   if(r.left < 8){ m.style.right = 'auto'; m.style.left = (8 - wrap.left) + 'px'; }
   else if(r.right > window.innerWidth - 8){ m.style.right = (wrap.right - window.innerWidth + 8) + 'px'; }
 }
+
+/* ============================================================
+   v45 — per-person shift schedules, row action menus, simpler
+   Downloads page, and the company birthday banner
+   ============================================================ */
+
+/* ---------- Per-person schedules ----------
+   Each employee still has one main shift (used for grouping, shift
+   group chats, and as the default). On top of that an admin can give
+   them a weekly pattern (a shift — or Off — for each weekday) and
+   one-off date changes. For any date: date change > weekly pattern >
+   main shift (and that shift's own work days). Same rules as the server. */
+var SCHED_DOW_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Mon..Sun for display
+function empYmd(monthKey, day){ return monthKey + '-' + pad2(day); }
+function ymdParts(ymd){ var p = String(ymd).split('-'); return { mk: p[0] + '-' + p[1], day: parseInt(p[2], 10) }; }
+function shiftExists(code){ return !!(code && STATE.shifts && STATE.shifts[code]); }
+function empShiftOn(emp, monthKey, day){
+  if(!emp) return { code: null, off: true, isDefault: true, override: false };
+  var ov = (emp.shiftOverrides || {})[empYmd(monthKey, day)];
+  if(ov === 'OFF') return { code: null, off: true, isDefault: false, override: true };
+  if(shiftExists(ov)) return { code: ov, off: false, isDefault: false, override: true };
+  var ws = emp.weeklySchedule;
+  if(ws && typeof ws === 'object'){
+    var w = ws[String(dateForDay(monthKey, day).getDay())];
+    if(!w || w === 'OFF') return { code: null, off: true, isDefault: false, override: false };
+    if(shiftExists(w)) return { code: w, off: false, isDefault: false, override: false };
+  }
+  var main = emp.shift || null;
+  return { code: main, off: !(main && isShiftWorkDay(main, monthKey, day)), isDefault: true, override: false };
+}
+/* Required time-in used for Late detection on that day. Matches the
+   server: someone with no personal schedule is measured against their
+   main shift every day (the old behaviour); a scheduled day off has no
+   required time. */
+function empRequiredTimeInOn(emp, monthKey, day){
+  var s = empShiftOn(emp, monthKey, day);
+  if(!s.code || (s.off && !s.isDefault)) return null;
+  return shiftRequiredTimeIn(s.code);
+}
+function empHasCustomSchedule(emp){
+  return !!(emp && ((emp.weeklySchedule && typeof emp.weeklySchedule === 'object') || Object.keys(emp.shiftOverrides || {}).length));
+}
+function shiftDayTagHTML(emp, monthKey, day){
+  var s = empShiftOn(emp, monthKey, day);
+  var label = s.off ? 'Off' : shiftName(s.code);
+  var cls = 'shift-tag' + (s.off ? ' off' : '') + (s.override ? ' changed' : '');
+  var title = s.override ? 'Changed for this date' : (s.off ? 'Not scheduled' : shiftScheduleLabel(s.code));
+  return '<span class="' + cls + '" title="' + esc(title) + '">' + esc(label) + (s.override ? ' *' : '') + '</span>';
+}
+/* "Mon–Tue 2D AM · Wed–Thu AM · Fri PM" */
+function weeklyScheduleSummary(ws){
+  if(!ws) return '';
+  var parts = [], i = 0;
+  while(i < SCHED_DOW_ORDER.length){
+    var code = ws[String(SCHED_DOW_ORDER[i])] || 'OFF';
+    var j = i;
+    while(j + 1 < SCHED_DOW_ORDER.length && (ws[String(SCHED_DOW_ORDER[j + 1])] || 'OFF') === code) j++;
+    if(code !== 'OFF'){
+      var a = DOW_SHORT[SCHED_DOW_ORDER[i]], b = DOW_SHORT[SCHED_DOW_ORDER[j]];
+      parts.push((i === j ? a : a + '–' + b) + ' ' + shiftName(code));
+    }
+    i = j + 1;
+  }
+  return parts.length ? parts.join(' · ') : 'Off every day';
+}
+function empScheduleHeadline(emp){
+  if(emp && emp.weeklySchedule) return weeklyScheduleSummary(emp.weeklySchedule);
+  return (emp && emp.shiftLabel) || '';
+}
+function defaultWeeklyFor(emp){
+  var out = {};
+  var wd = emp && emp.shift ? shiftWorkDays(emp.shift) : [];
+  for(var d = 0; d <= 6; d++) out[String(d)] = (emp && emp.shift && wd.indexOf(d) !== -1) ? emp.shift : 'OFF';
+  return out;
+}
+function ymdAddDays(ymd, n){
+  var p = ymd.split('-');
+  var d = new Date(Date.UTC(+p[0], +p[1] - 1, +p[2] + n));
+  return d.toISOString().slice(0, 10);
+}
+function fmtYmdLong(ymd){
+  var p = ymdParts(ymd);
+  return weekdayShort(p.mk, p.day) + ', ' + fmtDateShort(p.mk, p.day) + ', ' + p.mk.slice(0, 4);
+}
+/* A strip of the next few days (today first) for one employee. */
+function scheduleStripHTML(emp, days, draftEmp){
+  var e = draftEmp || emp;
+  var start = calTodayYmd();
+  var cells = '';
+  for(var i = 0; i < days; i++){
+    var ymd = ymdAddDays(start, i);
+    var p = ymdParts(ymd);
+    var s = empShiftOn(e, p.mk, p.day);
+    var req = (!s.off && s.code) ? shiftRequiredTimeIn(s.code) : null;
+    cells += '<div class="sched-day' + (i === 0 ? ' today' : '') + (s.off ? ' off' : '') + (s.override ? ' changed' : '') + '">' +
+      '<div class="sd-dow">' + esc(i === 0 ? 'Today' : weekdayShort(p.mk, p.day)) + '</div>' +
+      '<div class="sd-date">' + esc(fmtDateShort(p.mk, p.day)) + '</div>' +
+      '<div class="sd-shift">' + esc(s.off ? 'Off' : shiftName(s.code)) + '</div>' +
+      '<div class="sd-time">' + esc(req ? fmtTime12(req) : (s.off ? '—' : '')) + '</div>' +
+    '</div>';
+  }
+  return '<div class="sched-strip">' + cells + '</div>';
+}
+function myScheduleCardHTML(emp){
+  return '<div class="card card-pad stack" style="gap:10px;">' +
+    '<div class="row" style="justify-content:space-between; align-items:baseline;">' +
+      '<h2 style="font-size:18px;">My schedule</h2>' +
+      '<span class="muted" style="font-size:12.5px;">' + esc(emp.weeklySchedule ? weeklyScheduleSummary(emp.weeklySchedule) : (shiftName(emp.shift) + ' · ' + shiftWorkDaysLabel(emp.shift))) + '</span>' +
+    '</div>' +
+    scheduleStripHTML(emp, 7) +
+    '<p class="muted" style="margin:0; font-size:12px;">Times shown are when you’re expected to clock in. * marks a day your admin changed.</p>' +
+  '</div>';
+}
+
+/* ---------- Schedule window (admin) ---------- */
+function schedDraftEmp(){
+  var d = ui.modalData && ui.modalData.draft;
+  var emp = getEmployee(ui.modalData && ui.modalData.empId);
+  if(!d || !emp) return emp;
+  return Object.assign({}, emp, { weeklySchedule: d.custom ? d.weekly : null, shiftOverrides: d.overrides });
+}
+function shiftOptionsHTML(selected, withOff){
+  return (withOff ? '<option value="OFF"' + (selected === 'OFF' ? ' selected' : '') + '>Off</option>' : '') +
+    shiftCodes().map(function(code){
+      return '<option value="' + esc(code) + '"' + (selected === code ? ' selected' : '') + '>' + esc(shiftName(code)) + (shiftRequiredTimeIn(code) ? ' · ' + esc(fmtTime12(shiftRequiredTimeIn(code))) : '') + '</option>';
+    }).join('');
+}
+function empScheduleModalHTML(){
+  var emp = getEmployee(ui.modalData.empId);
+  if(!emp) return '';
+  var d = ui.modalData.draft;
+  var weeklyRows = SCHED_DOW_ORDER.map(function(dow){
+    return '<label class="sched-row"><span>' + esc(WEEKDAY_LONG[dow]) + '</span>' +
+      '<select class="sched-dow" data-dow="' + dow + '">' + shiftOptionsHTML(d.weekly[String(dow)] || 'OFF', true) + '</select></label>';
+  }).join('');
+  var today = calTodayYmd();
+  var keys = Object.keys(d.overrides).sort();
+  var upcoming = keys.filter(function(k){ return k >= today; });
+  var past = keys.filter(function(k){ return k < today; }).reverse();
+  function ovRow(k, isPast){
+    var v = d.overrides[k];
+    return '<div class="ov-row' + (isPast ? ' past' : '') + '">' +
+      '<span class="ov-date">' + esc(fmtYmdLong(k)) + '</span>' +
+      '<span class="shift-tag' + (v === 'OFF' ? ' off' : '') + '">' + esc(v === 'OFF' ? 'Off' : shiftName(v)) + '</span>' +
+      '<button type="button" class="btn btn-sm btn-ghost" data-action="emp-schedule-remove-override" data-date="' + esc(k) + '" aria-label="Remove this change">Remove</button>' +
+    '</div>';
+  }
+  var ovList = (upcoming.length ? upcoming.map(function(k){ return ovRow(k, false); }).join('') : '<p class="muted" style="margin:0; font-size:12.5px;">No upcoming date changes.</p>') +
+    (past.length ? '<details class="ov-past"><summary>Past changes (' + past.length + ')</summary>' + past.map(function(k){ return ovRow(k, true); }).join('') + '</details>' : '');
+
+  return modalShell('Shift schedule — ' + formatName(emp.name),
+    '<div class="stack" style="gap:16px;" id="sched-form">' +
+      '<p class="muted" style="margin:0; font-size:12.5px;">Main shift: <span class="badge-shift">' + esc(shiftName(emp.shift)) + '</span> ' + esc(shiftWorkDaysLabel(emp.shift)) + '. ' + siteText('people.schedule_help') + '</p>' +
+      '<div class="stack" style="gap:8px;">' +
+        '<div class="eyebrow">Every week</div>' +
+        '<label class="sched-choice"><input type="radio" name="sched-mode" value="main"' + (d.custom ? '' : ' checked') + '> Follow the main shift’s days</label>' +
+        '<label class="sched-choice"><input type="radio" name="sched-mode" value="custom"' + (d.custom ? ' checked' : '') + '> Set a shift for each day</label>' +
+        (d.custom ? '<div class="sched-grid">' + weeklyRows + '</div>' : '') +
+      '</div>' +
+      '<div class="stack" style="gap:8px;">' +
+        '<div class="eyebrow">Specific dates</div>' +
+        '<div class="ov-add">' +
+          '<input type="date" id="sched-ov-date" min="' + esc(ymdAddDays(today, -62)) + '" aria-label="Date">' +
+          '<select id="sched-ov-shift" aria-label="Shift for that date">' + shiftOptionsHTML('', true) + '</select>' +
+          '<button type="button" class="btn btn-sm" data-action="emp-schedule-add-override">Add</button>' +
+        '</div>' +
+        '<div class="stack" style="gap:0;">' + ovList + '</div>' +
+      '</div>' +
+      '<div class="stack" style="gap:8px;">' +
+        '<div class="eyebrow">Next 14 days</div>' +
+        scheduleStripHTML(emp, 14, schedDraftEmp()) +
+      '</div>' +
+    '</div>',
+    '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+    '<button class="btn btn-primary" data-action="emp-schedule-save">Save schedule</button>'
+  );
+}
+function schedSyncDraft(){
+  var d = ui.modalData && ui.modalData.draft;
+  if(!d) return;
+  var mode = document.querySelector('input[name="sched-mode"]:checked');
+  var wasCustom = d.custom;
+  d.custom = !!(mode && mode.value === 'custom');
+  if(d.custom && !wasCustom && !d.weeklyTouched){
+    d.weekly = defaultWeeklyFor(getEmployee(ui.modalData.empId));
+  }
+  document.querySelectorAll('.sched-dow').forEach(function(sel){
+    d.weekly[sel.getAttribute('data-dow')] = sel.value || 'OFF';
+    d.weeklyTouched = true;
+  });
+}
+handlers['emp-schedule-open'] = function(el){
+  var emp = getEmployee(el.dataset.id);
+  if(!emp) return;
+  ui.modal = 'empSchedule';
+  ui.modalData = { empId: emp.id, draft: {
+    custom: !!emp.weeklySchedule,
+    weekly: Object.assign({}, emp.weeklySchedule || defaultWeeklyFor(emp)),
+    overrides: Object.assign({}, emp.shiftOverrides || {})
+  } };
+  render();
+};
+handlers['emp-schedule-add-override'] = function(){
+  schedSyncDraft();
+  var date = ($('sched-ov-date') || {}).value || '';
+  var code = ($('sched-ov-shift') || {}).value || 'OFF';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ toast('Pick a date first.', 'error'); return; }
+  if(Object.keys(ui.modalData.draft.overrides).length >= 400 && !ui.modalData.draft.overrides[date]){ toast('That’s the most date changes one person can have — remove some old ones first.', 'error'); return; }
+  ui.modalData.draft.overrides[date] = code;
+  render();
+};
+handlers['emp-schedule-remove-override'] = function(el){
+  schedSyncDraft();
+  delete ui.modalData.draft.overrides[el.getAttribute('data-date')];
+  render();
+};
+handlers['emp-schedule-save'] = function(){
+  schedSyncDraft();
+  var id = ui.modalData.empId;
+  var d = ui.modalData.draft;
+  var weekly = d.custom ? Object.assign({}, d.weekly) : null;
+  var overrides = Object.assign({}, d.overrides);
+  ui.modal = null;
+  apiPersist('set-employee-schedule', { token: session.token, employeeId: id, weeklySchedule: weekly, shiftOverrides: overrides },
+    function(s){
+      var e = s.employees.filter(function(x){ return x.id === id; })[0];
+      if(e){ e.weeklySchedule = weekly; e.shiftOverrides = overrides; }
+    },
+    { successMsg: 'Schedule saved' });
+};
+
+/* ---------- Row "Actions" menus (People & Access) ----------
+   One small button per row instead of five or six, so the tables fit
+   without scrolling sideways. The menu floats above everything (it's
+   attached to <body>) so the table's scroll box can't clip it. */
+var rowMenuEl = null;
+function rowMenuItemsHTML(kind, key){
+  var items = [];
+  function it(action, label, attr, danger){ items.push('<button type="button" role="menuitem" class="rowmenu-item' + (danger ? ' danger' : '') + '" data-action="' + action + '" ' + attr + '>' + esc(label) + '</button>'); }
+  function sep(){ items.push('<div class="rowmenu-sep"></div>'); }
+  if(kind === 'emp'){
+    var e = getEmployee(key); if(!e) return '';
+    var a = 'data-id="' + esc(e.id) + '"';
+    it('edit-employee-open', 'Edit details', a);
+    it('emp-schedule-open', 'Shift schedule', a);
+    if(e.passcodeSet) it('reset-employee-passcode', 'Reset passcode', a);
+    if(e.photoDataUrl){ it('view-employee-photo', 'View photo', a); it('remove-employee-photo', 'Remove photo', a); }
+    sep();
+    it('toggle-employee-active', e.active ? 'Deactivate' : 'Activate', a, e.active);
+    it('delete-employee-open', 'Delete permanently…', a, true);
+  } else if(kind === 'admin'){
+    var isMePrimary = session.adminName === STATE.primaryAdmin;
+    var isPrimary = key === STATE.primaryAdmin;
+    var canManage = isMePrimary && !isPrimary;
+    var n = 'data-name="' + esc(key) + '"';
+    it('edit-admin-open', 'Edit email', n);
+    if(canManage && STATE.adminPasscodeSet && STATE.adminPasscodeSet[key]) it('reset-admin-passcode-open', 'Reset passcode', n);
+    if(canManage && STATE.adminPhotos && STATE.adminPhotos[key]) it('remove-admin-photo', 'Remove photo', n);
+    if(!isPrimary){ sep(); it('remove-admin', 'Remove admin', n, true); }
+  }
+  return items.join('');
+}
+function closeRowMenu(){
+  if(rowMenuEl){ rowMenuEl.remove(); rowMenuEl = null; }
+  document.querySelectorAll('.rowmenu-btn[aria-expanded="true"]').forEach(function(b){ b.setAttribute('aria-expanded', 'false'); });
+}
+function placeRowMenu(btn){
+  if(!rowMenuEl || !btn) return;
+  var r = btn.getBoundingClientRect();
+  var mw = rowMenuEl.offsetWidth, mh = rowMenuEl.offsetHeight;
+  var left = Math.min(Math.max(8, r.right - mw), window.innerWidth - mw - 8);
+  var top = r.bottom + 4;
+  if(top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  rowMenuEl.style.left = left + 'px';
+  rowMenuEl.style.top = top + 'px';
+}
+handlers['row-menu-toggle'] = function(el){
+  var already = el.getAttribute('aria-expanded') === 'true';
+  closeRowMenu();
+  if(already) return;
+  var html = rowMenuItemsHTML(el.getAttribute('data-kind'), el.getAttribute('data-key'));
+  if(!html) return;
+  rowMenuEl = document.createElement('div');
+  rowMenuEl.className = 'rowmenu';
+  rowMenuEl.setAttribute('role', 'menu');
+  rowMenuEl.innerHTML = html;
+  document.body.appendChild(rowMenuEl);
+  el.setAttribute('aria-expanded', 'true');
+  rowMenuEl._btn = el;
+  placeRowMenu(el);
+  var first = rowMenuEl.querySelector('.rowmenu-item');
+  if(first) first.focus({ preventScroll: true });
+};
+document.addEventListener('click', function(e){
+  if(!rowMenuEl) return;
+  if(e.target.closest && e.target.closest('.rowmenu-btn')) return;
+  setTimeout(closeRowMenu, 0);
+});
+document.addEventListener('keydown', function(e){
+  if(!rowMenuEl) return;
+  if(e.key === 'Escape'){ var b = rowMenuEl._btn; closeRowMenu(); if(b && b.focus) b.focus(); return; }
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    var items = Array.prototype.slice.call(rowMenuEl.querySelectorAll('.rowmenu-item'));
+    var i = items.indexOf(document.activeElement);
+    var n = e.key === 'ArrowDown' ? (i + 1) % items.length : (i - 1 + items.length) % items.length;
+    if(items[n]){ items[n].focus(); e.preventDefault(); }
+  }
+});
+window.addEventListener('resize', closeRowMenu);
+// Scrolling keeps the menu attached to its button; it only closes once
+// the button has scrolled out of sight.
+window.addEventListener('scroll', function(e){
+  if(!rowMenuEl) return;
+  if(e.target && e.target.nodeType === 1 && rowMenuEl.contains(e.target)) return;
+  var b = rowMenuEl._btn;
+  if(!b || !document.body.contains(b)){ closeRowMenu(); return; }
+  var r = b.getBoundingClientRect();
+  if(r.bottom < 0 || r.top > window.innerHeight){ closeRowMenu(); return; }
+  placeRowMenu(b);
+}, true);
+function rowMenuButtonHTML(kind, key, label){
+  return '<button type="button" class="btn btn-sm rowmenu-btn" data-action="row-menu-toggle" data-kind="' + kind + '" data-key="' + esc(key) + '" aria-haspopup="menu" aria-expanded="false" aria-label="Actions for ' + esc(label) + '"><span class="rm-label">Actions </span><span aria-hidden="true">▾</span></button>';
+}
+
+function employeesTableHTML(sortedEmployees){
+  var filter = (ui.peopleFilter || '').trim().toLowerCase();
+  var rows = sortedEmployees.map(function(e){
+    var hay = [formatName(e.name), e.email, e.department, e.position, shiftName(e.shift)].join(' ').toLowerCase();
+    var hide = filter && hay.indexOf(filter) === -1;
+    var schedNote = e.weeklySchedule ? '<div class="sub" title="' + esc(weeklyScheduleSummary(e.weeklySchedule)) + '">Custom week</div>' : '';
+    return '<tr data-search="' + esc(hay) + '"' + (hide ? ' hidden' : '') + '>' +
+      '<td><div class="person-cell">' + avatarHTML(e.photoDataUrl, e.name, 30) +
+        '<div class="person-text"><div class="nm">' + esc(formatName(e.name)) + (e.active ? '' : ' <span class="pill pill-off">Inactive</span>') + '</div>' +
+        '<div class="sub">' + esc(e.email || 'No email') + '</div></div></div></td>' +
+      '<td class="hide-sm">' + esc(e.department || '—') + '</td>' +
+      '<td class="hide-sm">' + esc(e.position || '—') + '</td>' +
+      '<td><span class="badge-shift">' + esc(shiftName(e.shift)) + '</span>' + schedNote + '</td>' +
+      '<td class="hide-sm">' + (e.passcodeSet ? '<span class="muted">Set</span>' : '<span class="pill pill-off">Not set</span>') + '</td>' +
+      '<td class="actions-cell">' + rowMenuButtonHTML('emp', e.id, formatName(e.name)) + '</td>' +
+    '</tr>';
+  }).join('');
+  var visible = sortedEmployees.filter(function(e){
+    var hay = [formatName(e.name), e.email, e.department, e.position, shiftName(e.shift)].join(' ').toLowerCase();
+    return !filter || hay.indexOf(filter) !== -1;
+  }).length;
+  return '<table class="people-table"><thead><tr><th>Employee</th><th class="hide-sm">Department</th><th class="hide-sm">Position</th><th>Shift</th><th class="hide-sm">Passcode</th><th class="actions-cell"><span class="sr-only">Actions</span></th></tr></thead>' +
+    '<tbody>' + rows + '</tbody></table>' +
+    '<p class="empty" id="people-filter-empty"' + (visible ? ' hidden' : '') + '>No one matches that search.</p>';
+}
+function adminsTableHTML(){
+  var isMePrimary = session.adminName === STATE.primaryAdmin;
+  var rows = STATE.admins.map(function(a){
+    var isPrimary = a === STATE.primaryAdmin;
+    var email = (STATE.adminEmails && STATE.adminEmails[a]) || '';
+    var photo = (STATE.adminPhotos && STATE.adminPhotos[a]) || null;
+    var hasOwnPasscode = !!(STATE.adminPasscodeSet && STATE.adminPasscodeSet[a]);
+    var canBroadcastThem = !!(STATE.adminBroadcastAccess && STATE.adminBroadcastAccess[a]);
+    var canManage = isMePrimary && !isPrimary;
+    return '<tr>' +
+      '<td><div class="person-cell">' + avatarHTML(photo, a, 30) +
+        '<div class="person-text"><div class="nm">' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</div>' +
+        '<div class="sub">' + esc(email || 'No email') + '</div></div></div></td>' +
+      '<td class="hide-sm muted">' + (hasOwnPasscode ? 'Personal' : 'Shared') + '</td>' +
+      '<td>' + (canManage
+          ? '<label class="row" style="gap:6px; align-items:center; font-size:12.5px; font-weight:400; flex-wrap:nowrap;"><input type="checkbox" data-action="toggle-admin-broadcast" data-name="' + esc(a) + '"' + (canBroadcastThem ? ' checked' : '') + '> Allowed</label>'
+          : (isPrimary ? '<span class="muted">Always</span>' : (canBroadcastThem ? '<span class="muted">Allowed</span>' : '<span class="muted">—</span>'))) +
+      '</td>' +
+      '<td class="actions-cell">' + rowMenuButtonHTML('admin', a, a) + '</td>' +
+    '</tr>';
+  }).join('');
+  return '<table class="people-table"><thead><tr><th>Admin</th><th class="hide-sm">Passcode</th><th>Announcements</th><th class="actions-cell"><span class="sr-only">Actions</span></th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+function applyPeopleFilter(){
+  var inp = $('people-filter');
+  if(!inp) return;
+  var q = (inp.value || '').trim().toLowerCase();
+  ui.peopleFilter = inp.value;
+  var shown = 0;
+  document.querySelectorAll('.people-table tr[data-search]').forEach(function(tr){
+    var match = !q || tr.getAttribute('data-search').indexOf(q) !== -1;
+    tr.hidden = !match;
+    if(match) shown++;
+  });
+  var empty = $('people-filter-empty');
+  if(empty) empty.hidden = shown > 0;
+}
+
+/* ---------- Pick-lists (Downloads, Company Forms) ----------
+   A box you can either type in to search or open like a dropdown to
+   scroll the whole list. */
+function pickerItems(id){
+  if(id === 'dl-emp'){
+    var list = STATE.employees.slice().sort(PEOPLE_SORTS.surname || function(a, b){ return formatName(a.name).localeCompare(formatName(b.name)); });
+    var active = list.filter(function(e){ return e.active; }), inactive = list.filter(function(e){ return !e.active; });
+    return active.concat(inactive).map(function(e){ return { value: e.id, label: formatName(e.name), sub: e.active ? shiftName(e.shift) : 'Inactive' }; });
+  }
+  if(id === 'dl-form' || id === 'emp-form'){
+    return COMPANY_FORMS.map(function(f){ return { value: f.key, label: f.label, sub: 'PDF' }; });
+  }
+  return [];
+}
+var PICKER_STATE_KEY = { 'dl-emp': 'dlEmpId', 'dl-form': 'dlFormKey', 'emp-form': 'empFormKey' };
+function pickerSelected(id){
+  var v = ui[PICKER_STATE_KEY[id]];
+  var it = pickerItems(id).filter(function(x){ return x.value === v; })[0];
+  if(!it && v) ui[PICKER_STATE_KEY[id]] = null;
+  return it || null;
+}
+function pickerHTML(id, label, placeholder){
+  var sel = pickerSelected(id);
+  return '<div class="picker">' +
+    '<label class="field" for="' + id + '">' + esc(label) + '</label>' +
+    '<div class="picker-box">' +
+      '<input type="text" id="' + id + '" class="picker-input" data-picker="' + id + '" placeholder="' + esc(placeholder) + '" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="' + id + '-results" value="' + esc(sel ? sel.label : '') + '">' +
+      '<button type="button" class="picker-caret" data-picker-caret="' + id + '" tabindex="-1" aria-label="Show the full list">▾</button>' +
+      '<div class="autocomplete-results picker-results" id="' + id + '-results" role="listbox" hidden></div>' +
+    '</div>' +
+  '</div>';
+}
+function pickerRender(id, query){
+  var box = $(id + '-results'), inp = $(id);
+  if(!box) return;
+  var q = (query || '').trim().toLowerCase();
+  var items = pickerItems(id).filter(function(it){ return !q || it.label.toLowerCase().indexOf(q) !== -1; });
+  var cur = ui[PICKER_STATE_KEY[id]];
+  box.innerHTML = items.length ? items.map(function(it){
+    return '<div class="autocomplete-item' + (it.value === cur ? ' is-current' : '') + '" role="option" tabindex="-1" data-picker-value="' + esc(it.value) + '">' +
+      '<span>' + esc(it.label) + '</span>' + (it.sub ? '<span class="badge-shift">' + esc(it.sub) + '</span>' : '') + '</div>';
+  }).join('') : '<div class="autocomplete-empty">No match</div>';
+  box.hidden = false;
+  if(inp) inp.setAttribute('aria-expanded', 'true');
+}
+function pickerClose(id){
+  var box = $(id + '-results'), inp = $(id);
+  if(box){ box.hidden = true; box.innerHTML = ''; }
+  if(inp){
+    inp.setAttribute('aria-expanded', 'false');
+    var sel = pickerSelected(id);
+    inp.value = sel ? sel.label : '';
+  }
+}
+function pickerPick(id, value){
+  ui[PICKER_STATE_KEY[id]] = value;
+  var inp = $(id); if(inp) inp.blur();
+  render();
+}
+function wirePickers(){
+  document.querySelectorAll('.picker-input').forEach(function(inp){
+    var id = inp.getAttribute('data-picker');
+    inp.addEventListener('focus', function(){ inp.select(); pickerRender(id, ''); });
+    inp.addEventListener('input', function(){ pickerRender(id, inp.value); });
+    inp.addEventListener('blur', function(){ setTimeout(function(){ if(document.activeElement !== inp) pickerClose(id); }, 150); });
+    inp.addEventListener('keydown', function(e){
+      var box = $(id + '-results');
+      var opts = box ? Array.prototype.slice.call(box.querySelectorAll('[data-picker-value]')) : [];
+      var i = opts.findIndex(function(o){ return o.classList.contains('kb'); });
+      if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+        e.preventDefault();
+        if(box && box.hidden) pickerRender(id, '');
+        opts = Array.prototype.slice.call(box.querySelectorAll('[data-picker-value]'));
+        if(!opts.length) return;
+        if(i >= 0) opts[i].classList.remove('kb');
+        var n = e.key === 'ArrowDown' ? Math.min(opts.length - 1, i + 1) : Math.max(0, i - 1);
+        opts[n].classList.add('kb'); opts[n].scrollIntoView({ block: 'nearest' });
+      } else if(e.key === 'Enter'){
+        e.preventDefault(); e.stopPropagation();
+        var pick = i >= 0 ? opts[i] : (opts.length === 1 || (opts.length && inp.value.trim()) ? opts[0] : null);
+        if(pick) pickerPick(id, pick.getAttribute('data-picker-value'));
+      } else if(e.key === 'Escape'){
+        inp.blur();
+      }
+    });
+    var box = $(id + '-results');
+    if(box) box.addEventListener('mousedown', function(e){
+      var opt = e.target.closest('[data-picker-value]');
+      e.preventDefault();
+      if(opt) pickerPick(id, opt.getAttribute('data-picker-value'));
+    });
+  });
+  document.querySelectorAll('[data-picker-caret]').forEach(function(btn){
+    btn.addEventListener('mousedown', function(e){
+      e.preventDefault();
+      var id = btn.getAttribute('data-picker-caret');
+      var inp = $(id);
+      var box = $(id + '-results');
+      if(box && !box.hidden){ inp.blur(); return; }
+      if(inp) inp.focus();
+    });
+  });
+}
+
+function adminDownloadsTabV45(){
+  var monthKey = adminMonth();
+  var monthLabel = '<strong>' + esc(monthKeyLabel(monthKey)) + '</strong>';
+  var emp = pickerSelected('dl-emp');
+  var form = pickerSelected('dl-form');
+  var dis = function(on){ return on ? '' : ' disabled'; };
+  return '<div class="stack dl-page" style="gap:16px;">' +
+    '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('downloads.intro', { month: monthLabel }) + '</p>' +
+
+    '<div class="card card-pad stack dl-card">' +
+      '<div><div class="dl-title">Employee timesheet &amp; attendance</div><div class="muted" style="font-size:12.5px;">For ' + monthLabel + ' — change the month at the top right.</div></div>' +
+      '<div class="dl-row">' +
+        pickerHTML('dl-emp', 'Employee', 'Search or pick an employee') +
+        '<div class="dl-btns">' +
+          '<button class="btn btn-primary" data-action="download-emp-timesheet" data-id="' + esc(emp ? emp.value : '') + '"' + dis(emp) + '>Timesheet</button>' +
+          '<button class="btn" data-action="download-emp-attendance" data-id="' + esc(emp ? emp.value : '') + '"' + dis(emp) + '>Attendance</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card card-pad stack dl-card">' +
+      '<div><div class="dl-title">Company form templates</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.forms') + '</div></div>' +
+      '<div class="dl-row">' +
+        pickerHTML('dl-form', 'Form', 'Search or pick a form') +
+        '<div class="dl-btns"><button class="btn btn-primary" data-action="download-company-form" data-key="' + esc(form ? form.value : '') + '"' + dis(form) + '>Download PDF</button></div>' +
+      '</div>' +
+    '</div>' +
+
+    '<div class="card card-pad dl-card dl-inline">' +
+      '<div><div class="dl-title">Whole company</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.company') + '</div></div>' +
+      '<div class="dl-btns"><button class="btn" data-action="download-all-summary">Summary</button><button class="btn" data-action="download-attendance-grid">Attendance Grid</button></div>' +
+    '</div>' +
+
+    '<div class="card card-pad dl-card dl-inline">' +
+      '<div><div class="dl-title">Records &amp; backup</div><div class="muted" style="font-size:12.5px;">' + siteText('downloads.chat') + ' ' + siteText('downloads.backup') + '</div></div>' +
+      '<div class="dl-btns">' +
+        '<button class="btn" data-action="chat-report-open">Chat report</button>' +
+        '<button class="btn" data-action="export-backup">Export Backup</button>' +
+        '<label class="btn btn-ghost" for="restore-backup-input" style="cursor:pointer; margin:0;">Restore…<input type="file" id="restore-backup-input" accept="application/json,.json" style="display:none;"></label>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+function companyFormsCardHTMLV45(){
+  var form = pickerSelected('emp-form');
+  return '<div class="card card-pad stack">' +
+    '<h2 style="font-size:18px;">Company Forms</h2>' +
+    '<p class="muted" style="margin:-8px 0 0; font-size:12.5px;">' + siteText('employee.forms', { primary: esc(STATE.primaryAdmin || 'admin') }) + '</p>' +
+    '<div class="dl-row">' +
+      pickerHTML('emp-form', 'Form', 'Search or pick a form') +
+      '<div class="dl-btns"><button class="btn btn-primary" data-action="request-company-form-open" data-key="' + esc(form ? form.value : '') + '"' + (form ? '' : ' disabled') + '>Request from Admin</button></div>' +
+    '</div>' +
+  '</div>';
+}
+
+/* ---------- Birthday banner ----------
+   Everyone sees it on the day — on the welcome page, every employee's
+   dashboard and the admin dashboard — themed on the SDI logo, with the
+   celebrant's own profile photo. The server works out whose birthday it
+   is (Manila date) and only ever sends name + photo, never the year. */
+function bdayFirstName(name){
+  var n = String(name || '').trim();
+  var first = n.indexOf(',') !== -1 ? n.split(',')[1].trim() : n;
+  first = first.split(/\s+/)[0] || n;
+  return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
+}
+function bdayHiddenKey(){ return 'sdi_bday_hidden_' + calTodayYmd(); }
+function bdayIsHidden(){
+  try{ return localStorage.getItem(bdayHiddenKey()) === '1'; }catch(e){ return !!ui.bdayHidden; }
+}
+function bdayPhotoHTML(p, size){
+  var inner = p.photoDataUrl
+    ? '<img src="' + esc(p.photoDataUrl) + '" alt="">'
+    : '<span class="bday-initials">' + esc(chatInitials ? chatInitials(formatName(p.name)) : formatName(p.name).slice(0, 2)) + '</span>';
+  return '<div class="bday-photo" style="width:' + size + 'px;height:' + size + 'px;">' + inner + '</div>';
+}
+function birthdayBannerHTML(){
+  var list = STATE.birthdaysToday || [];
+  if(!list.length || bdayIsHidden()) return '';
+  var names = list.map(function(p){ return bdayFirstName(p.name); });
+  var joined = names.length === 1 ? names[0] : names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1];
+  var mine = session.role === 'employee' && list.some(function(p){ return p.id === session.employeeId; });
+  var photoSize = list.length === 1 ? 104 : (list.length === 2 ? 84 : 68);
+  var photos = list.map(function(p){ return bdayPhotoHTML(p, photoSize); }).join('');
+  var diamonds = '<svg class="bday-motif" viewBox="0 0 120 120" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="3">' +
+    '<path d="M60 8 L112 48 L60 88 L8 48 Z"/><path d="M60 22 L104 56 L60 90 L16 56 Z" opacity=".6"/><path d="M60 36 L96 64 L60 92 L24 64 Z" opacity=".35"/></g></svg>';
+  var confetti = '';
+  for(var i = 0; i < 14; i++) confetti += '<i style="--i:' + i + '"></i>';
+  return '<section class="bday" aria-label="Birthday greeting">' +
+    '<div class="bday-confetti" aria-hidden="true">' + confetti + '</div>' +
+    diamonds +
+    '<button type="button" class="bday-close" data-action="bday-hide" aria-label="Hide for today">×</button>' +
+    '<div class="bday-photos">' + photos + '<span class="bday-cake" aria-hidden="true">🎂</span></div>' +
+    '<div class="bday-text">' +
+      (LOGO_SRC ? '<img class="bday-logo" src="' + LOGO_SRC + '" alt="' + esc(STATE.orgName || '') + '">' : '') +
+      '<div class="bday-eyebrow">' + (mine ? 'It’s your day' : 'Today we celebrate') + '</div>' +
+      '<h2 class="bday-title">' + siteText('birthday.title', { name: esc(joined) }) + '</h2>' +
+      '<p class="bday-msg">' + siteText('birthday.message', { org: esc(STATE.orgName || 'Steel Drafting Innovations'), name: esc(joined) }) + '</p>' +
+    '</div>' +
+  '</section>';
+}
+handlers['bday-hide'] = function(){
+  try{ localStorage.setItem(bdayHiddenKey(), '1'); }catch(e){ ui.bdayHidden = true; }
+  render();
+};
+
+/* Website Text entries for the new bits (primary admin can reword them). */
+[
+  { key: 'birthday.title', page: 'calendar', label: 'Birthday banner — heading', def: 'Happy Birthday, {name}!', vars: ['name'] },
+  { key: 'birthday.message', page: 'calendar', label: 'Birthday banner — message', def: 'Wishing you a wonderful year ahead from everyone at {org}.', vars: ['org', 'name'] },
+  { key: 'people.schedule_help', page: 'people', label: 'Shift schedule window', def: 'Set which shift this person works on each day of the week, and change specific dates (a make-up class, a day off). A date change beats the weekly pattern. Late detection and the attendance export follow this schedule.' }
+].forEach(function(d){
+  if(!SITE_TEXT_BY_KEY[d.key]){ SITE_TEXT_DEFS.push(d); SITE_TEXT_BY_KEY[d.key] = d; }
+});
+if(typeof SITE_TEXT_VAR_HELP === 'object' && SITE_TEXT_VAR_HELP && !SITE_TEXT_VAR_HELP.name) SITE_TEXT_VAR_HELP.name = 'the person’s name';
+
+function v45WireAfterRender(){
+  wirePickers();
+  var pf = $('people-filter');
+  if(pf) pf.addEventListener('input', applyPeopleFilter);
+  var form = $('sched-form');
+  if(form){
+    form.addEventListener('change', function(e){
+      if(e.target.id === 'sched-ov-date' || e.target.id === 'sched-ov-shift') return;
+      schedSyncDraft();
+      render();
+    });
+  }
+  if(rowMenuEl){
+    // A redraw replaced the table under an open menu; re-anchor it.
+    var k = rowMenuEl._btn;
+    var nb = k ? document.querySelector('.rowmenu-btn[data-kind="' + k.getAttribute('data-kind') + '"][data-key="' + (window.CSS && CSS.escape ? CSS.escape(k.getAttribute('data-key')) : k.getAttribute('data-key')) + '"]') : null;
+    if(nb){ nb.setAttribute('aria-expanded', 'true'); rowMenuEl._btn = nb; placeRowMenu(nb); } else closeRowMenu();
+  }
+}
+
+(function injectV45Styles(){
+  var css =
+  '.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0;}' +
+  /* people tables */
+  'table.people-table{min-width:0;}' +
+  '.people-table td{vertical-align:middle;}' +
+  '.person-cell{display:flex;align-items:center;gap:10px;min-width:0;}' +
+  '.person-text{min-width:0;} .person-text .nm{font-weight:600;white-space:nowrap;} .person-text .sub, .people-table .sub{font-size:12px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px;}' +
+  '.people-table .actions-cell{text-align:right;width:1%;}' +
+  '.people-tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}' +
+  '.people-tools input[type=search]{width:220px;max-width:100%;font-family:inherit;font-size:13.5px;padding:8px 10px;border-radius:7px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);}' +
+  '.rowmenu-btn{white-space:nowrap;}' +
+  '.rowmenu{position:fixed;z-index:120;min-width:190px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 14px 34px rgba(12,15,17,.22);padding:6px;}' +
+  '.rowmenu-item{display:block;width:100%;text-align:left;background:none;border:0;border-radius:6px;padding:9px 12px;font:inherit;font-size:13.5px;color:var(--ink);cursor:pointer;}' +
+  '.rowmenu-item:hover,.rowmenu-item:focus{background:var(--surface-2);outline:none;}' +
+  '.rowmenu-item.danger{color:var(--bad);} .rowmenu-item.danger:hover,.rowmenu-item.danger:focus{background:var(--bad-soft);}' +
+  '.rowmenu-sep{height:1px;background:var(--line);margin:5px 4px;}' +
+  '@media (max-width:720px){ .people-table .hide-sm{display:none;} .people-table th, .people-table td{padding:8px 8px;} .people-table td:first-child{white-space:normal;} .person-text .nm{white-space:normal;} .person-text .sub{max-width:150px;} .people-table .badge-shift{white-space:nowrap;} }' +
+  '@media (max-width:520px){ .rowmenu-btn .rm-label{display:none;} .rowmenu-btn{padding:6px 10px;font-size:14px;} .people-table .sub{white-space:normal;} .person-text .sub{max-width:130px;white-space:nowrap;} .person-cell{gap:8px;} }' +
+  /* shift tags + schedules */
+  '.shift-tag{display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.02em;padding:1px 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent);white-space:nowrap;}' +
+  '.shift-tag.off{background:var(--off-soft);color:var(--off);} .shift-tag.changed{box-shadow:inset 0 0 0 1px currentColor;}' +
+  'td .shift-tag{margin-left:6px;}' +
+  '.sched-strip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;}' +
+  '.sched-day{border:1px solid var(--line);border-radius:9px;padding:7px 6px;text-align:center;background:var(--surface);min-width:0;}' +
+  '.sched-day .sd-dow{font-size:10.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);font-weight:600;}' +
+  '.sched-day .sd-date{font-size:11.5px;color:var(--ink-soft);}' +
+  '.sched-day .sd-shift{font-weight:700;font-size:13px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--accent);}' +
+  '.sched-day .sd-time{font-size:11px;color:var(--ink-soft);min-height:1em;}' +
+  '.sched-day.today{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);}' +
+  '.sched-day.off{background:var(--surface-2);} .sched-day.off .sd-shift{color:var(--off);}' +
+  '.sched-day.changed .sd-shift::after{content:" *";}' +
+  '@media (max-width:560px){ .sched-strip{grid-template-columns:repeat(4,minmax(0,1fr));} }' +
+  '.modal .sched-strip{grid-template-columns:repeat(7,minmax(0,1fr));} .modal .sched-day{padding:5px 3px;} .modal .sched-day .sd-shift{font-size:11.5px;}' +
+  '@media (max-width:520px){ .modal .sched-strip{grid-template-columns:repeat(4,minmax(0,1fr));} }' +
+  '.sched-choice{display:flex;align-items:center;gap:8px;font-size:13.5px;font-weight:500;color:var(--ink);cursor:pointer;}' +
+  '.sched-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;padding:4px 0 0 24px;}' +
+  '.sched-row{display:flex;flex-direction:column;gap:3px;font-size:12px;font-weight:600;color:var(--ink-soft);}' +
+  '@media (max-width:520px){ .sched-grid{grid-template-columns:1fr;padding-left:0;} }' +
+  '.ov-add{display:flex;gap:8px;flex-wrap:wrap;align-items:center;} .ov-add input[type=date]{font-family:inherit;font-size:13.5px;padding:7px 9px;border-radius:7px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);flex:1 1 150px;} .ov-add select{flex:1 1 140px;width:auto;}' +
+  '.ov-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px;} .ov-row .ov-date{flex:1;} .ov-row.past{opacity:.6;}' +
+  '.ov-past summary{cursor:pointer;font-size:12.5px;color:var(--ink-soft);padding:8px 0 4px;}' +
+  '.modal:has(#sched-form){max-width:560px;}' +
+  /* pick-lists + downloads */
+  '.picker{display:flex;flex-direction:column;gap:5px;flex:1 1 280px;min-width:0;}' +
+  '.picker-box{position:relative;}' +
+  '.picker-box .picker-input{padding-right:36px;}' +
+  '.picker-caret{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:28px;height:28px;border:0;background:none;color:var(--ink-soft);cursor:pointer;font-size:13px;border-radius:6px;}' +
+  '.picker-caret:hover{background:var(--surface-2);color:var(--ink);}' +
+  '.picker-results{max-height:280px;}' +
+  '.autocomplete-item.is-current{font-weight:700;} .autocomplete-item.kb{background:var(--surface-2);}' +
+  '.dl-row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;}' +
+  '.dl-btns{display:flex;gap:8px;flex-wrap:wrap;}' +
+  '.dl-title{font-weight:600;}' +
+  '.dl-inline{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;}' +
+  '.dl-inline > div:first-child{flex:1 1 260px;min-width:0;}' +
+  /* birthday banner — SDI logo theme */
+  '.bday{position:relative;overflow:hidden;display:flex;align-items:center;gap:22px;padding:22px 26px;border-radius:16px;color:#F4F5F3;' +
+    'background:radial-gradient(120% 140% at 0% 0%, rgba(42,111,151,.55) 0%, rgba(42,111,151,0) 55%), radial-gradient(90% 120% at 100% 100%, rgba(42,111,151,.35) 0%, rgba(42,111,151,0) 60%), #0C0F11;' +
+    'box-shadow:0 1px 2px rgba(20,23,26,.1), 0 16px 36px -16px rgba(12,15,17,.55);}' +
+  '.bday::before{content:"";position:absolute;inset:0;background-image:repeating-linear-gradient(0deg, rgba(255,255,255,.035) 0 1px, transparent 1px 28px),repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 1px, transparent 1px 28px);pointer-events:none;}' +
+  '.bday-motif{position:absolute;right:-18px;top:50%;transform:translateY(-50%);width:190px;height:190px;color:rgba(220,234,242,.13);pointer-events:none;}' +
+  '.bday-photos{position:relative;display:flex;flex:none;}' +
+  '.bday-photos .bday-photo + .bday-photo{margin-left:-18px;}' +
+  '.bday-photo{border-radius:50%;padding:3px;background:conic-gradient(from 200deg, #9FC9E2, #2A6F97, #F4F5F3, #2A6F97, #9FC9E2);flex:none;box-shadow:0 6px 18px rgba(0,0,0,.45);}' +
+  '.bday-photo img, .bday-photo .bday-initials{width:100%;height:100%;border-radius:50%;display:flex;align-items:center;justify-content:center;object-fit:cover;border:3px solid #0C0F11;background:#1B2328;color:#DCEAF2;font-family:"Big Shoulders Display",sans-serif;font-weight:700;font-size:30px;}' +
+  '.bday-cake{position:absolute;right:-6px;bottom:-4px;font-size:26px;filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));}' +
+  '.bday-text{position:relative;min-width:0;display:flex;flex-direction:column;gap:4px;}' +
+  '.bday-logo{height:22px;width:auto;align-self:flex-start;margin-bottom:6px;opacity:.95;}' +
+  '.bday-eyebrow{font-size:11px;text-transform:uppercase;letter-spacing:.2em;color:#9FC9E2;font-weight:600;}' +
+  '.bday-title{font-family:"Big Shoulders Display","Arial Narrow",sans-serif;font-size:34px;line-height:1.05;color:#fff;letter-spacing:.01em;margin:0;}' +
+  '.bday-msg{margin:2px 0 0;color:#C8D0D4;font-size:14px;max-width:52ch;}' +
+  '.bday-close{position:absolute;top:8px;right:10px;z-index:2;width:30px;height:30px;border-radius:50%;border:1px solid rgba(255,255,255,.22);background:rgba(255,255,255,.06);color:#F4F5F3;font-size:18px;line-height:1;cursor:pointer;}' +
+  '.bday-close:hover{background:rgba(255,255,255,.16);border-color:#fff;}' +
+  '.bday-confetti{position:absolute;inset:0;pointer-events:none;}' +
+  '.bday-confetti i{position:absolute;top:-10px;left:calc(var(--i) * 7% + 3%);width:6px;height:10px;border-radius:1px;background:#9FC9E2;opacity:.8;animation:bdayfall 5.5s linear infinite;animation-delay:calc(var(--i) * -0.41s);transform:rotate(calc(var(--i) * 37deg));}' +
+  '.bday-confetti i:nth-child(3n){background:#F4F5F3;width:4px;height:4px;border-radius:50%;}' +
+  '.bday-confetti i:nth-child(4n){background:#2A6F97;}' +
+  '@keyframes bdayfall{0%{transform:translateY(0) rotate(0deg);}100%{transform:translateY(260px) rotate(540deg);}}' +
+  '@media (max-width:640px){ .bday{flex-direction:column;text-align:center;padding:24px 18px 20px;gap:14px;} .bday-text{align-items:center;} .bday-logo{align-self:center;} .bday-title{font-size:28px;} .bday-motif{opacity:.6;} }' +
+  '@media (prefers-reduced-motion: reduce){ .bday-confetti{display:none;} }' +
+  '.center-wrap .bday{margin-bottom:4px;}';
+  var s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+})();
+
+
+[{ key: 'people.grace_help', page: 'people', label: 'Grace period note (shift windows)', def: 'A time in within the grace period still counts as on time. After it, the person is marked Late and the minutes are counted from the required time in.' }].forEach(function(d){
+  if(!SITE_TEXT_BY_KEY[d.key]){ SITE_TEXT_DEFS.push(d); SITE_TEXT_BY_KEY[d.key] = d; }
+});
 
 /* ============================================================
    BOOT
