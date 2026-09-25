@@ -494,6 +494,7 @@ function applyServerState(data){
     STATE.adminPhotos = data.adminPhotos || {};
     STATE.adminPasscodeSet = data.adminPasscodeSet || {};
     STATE.adminBroadcastAccess = data.adminBroadcastAccess || {};
+    STATE.adminProfiles = data.adminProfiles || {};
     STATE.employees = data.employees || [];
     STATE.entries = data.entries || {};
     STATE.concerns = data.concerns || [];
@@ -1021,12 +1022,13 @@ function readEntryRow(tr, changed, requiredTimeIn, graceMin){
     if(!timeIn){
       if(status === 'L'){ status = ''; minLateVal = ''; }
     } else if(diff !== null && diff > (graceMin || 0)){
-      status = 'L'; minLateVal = String(diff);
+      // v46: minutes late are counted from the end of the grace period.
+      status = 'L'; minLateVal = String(diff - (graceMin || 0));
     } else if(status === 'L' || status === ''){
       status = 'P'; minLateVal = '';
     }
   } else if(changed === 'status'){
-    if(status === 'L' && minLateVal === '' && diff !== null && diff > 0) minLateVal = String(diff);
+    if(status === 'L' && minLateVal === '' && diff !== null && diff > (graceMin || 0)) minLateVal = String(diff - (graceMin || 0));
     if(status !== 'L') minLateVal = '';
   }
   statusEl.value = status;
@@ -1067,6 +1069,15 @@ function scheduleEntryRowSave(tr, changed, immediate){
   var emp = getEmployee(empId);
   // v45: required time-in and grace come from the shift this person is
   // scheduled on that particular day (weekly pattern / date change).
+  if(changed === 'timeout'){
+    // v46: a worked day gets the standard 30 min lunch + 30 min personal
+    // unless the admin has already typed something else.
+    var toEl = tr.querySelector('.entry-timeout'), lEl = tr.querySelector('.entry-lunch'), pEl = tr.querySelector('.entry-personal');
+    if(toEl && toEl.value){
+      if(lEl && lEl.value === '') lEl.value = String(DEFAULT_LUNCH_MIN);
+      if(pEl && pEl.value === '') pEl.value = String(DEFAULT_PERSONAL_MIN);
+    }
+  }
   if(changed === 'timein' || changed === 'status'){
     var dShift = emp ? empShiftOn(emp, monthKey, parseInt(day, 10)) : null;
     readEntryRow(tr, changed, emp ? empRequiredTimeInOn(emp, monthKey, parseInt(day, 10)) : null, dShift && dShift.code ? shiftGraceMinutes(dShift.code) : 0);
@@ -1497,16 +1508,16 @@ function employeeTimesheetExcelHTML(emp, monthKey){
   var monthOf = MONTH_NAMES[mi.month-1] + ' 1, ' + mi.year;
   var html = '';
 
-  html += '<tr>' + xlTd('TIMESHEET', 'background:'+XL.ink+';color:#fff;font-weight:700;font-size:18px;padding:14px;text-align:center;', 10) + '</tr>';
-  html += '<tr>' + xlTd('Blue text shows the fields filled in for this employee.', 'padding:4px 9px;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';border:none;', 10) + '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 10) + '</tr>';
+  html += '<tr>' + xlTd('TIMESHEET', 'background:'+XL.ink+';color:#fff;font-weight:700;font-size:18px;padding:14px;text-align:center;', 12) + '</tr>';
+  html += '<tr>' + xlTd('Blue text shows the fields filled in for this employee.', 'padding:4px 9px;font-size:10.5px;font-style:italic;color:'+XL.inkSoft+';border:none;', 12) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 12) + '</tr>';
 
   function fieldRow(l1, v1, l2, v2){
     return '<tr>' +
       xlTd(esc(l1), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-      xlTd(esc(v1) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 4) +
+      xlTd(esc(v1) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 5) +
       xlTd(esc(l2), XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-      xlTd(esc(v2) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 4) +
+      xlTd(esc(v2) || '&nbsp;', XL_CELL + 'color:'+XL.accent+';', 5) +
     '</tr>';
   }
   html += fieldRow('Employee Name', formatName(emp.name), 'Employee ID', '');
@@ -1514,11 +1525,13 @@ function employeeTimesheetExcelHTML(emp, monthKey){
   html += fieldRow('Manager', emp.manager||'', 'Position', emp.position||'');
   html += '<tr>' +
     xlTd('For the Month Of', XL_CELL + 'font-weight:700;background:#F7F8F9;') +
-    xlTd(esc(monthOf), XL_CELL + 'color:'+XL.accent+';', 9) +
+    xlTd(esc(monthOf), XL_CELL + 'color:'+XL.accent+';', 11) +
   '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 10) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:3px;', 12) + '</tr>';
 
-  var headers = ['DATE','DAY','TIME IN','TIME OUT','LUNCH','PERSONAL','TOTAL HRS','REG HRS','OT HRS','NOTES'];
+  // v47: SHIFT (what they were scheduled on that day) and LATE (minutes
+  // late, after the grace period) — same values as Edit Entries.
+  var headers = ['DATE','DAY','SHIFT','TIME IN','TIME OUT','LATE (MIN)','LUNCH','PERSONAL','TOTAL HRS','REG HRS','OT HRS','NOTES'];
   html += '<tr>' + headers.map(function(h){
     return xlTd(h, XL_CELL + 'font-weight:700;background:'+XL.accentSoft+';color:'+XL.accent+';text-align:center;');
   }).join('') + '</tr>';
@@ -1539,10 +1552,20 @@ function employeeTimesheetExcelHTML(emp, monthKey){
     var timeCells = isAbsent
       ? xlTd('ABSENT', XL_CELL + 'text-align:center;font-weight:700;color:'+XL.bad+';background:'+XL.badSoft+';', 2)
       : xlTd(entry.timeIn?fmtTime12(entry.timeIn):'', valStyle) + xlTd(entry.timeOut?fmtTime12(entry.timeOut):'', valStyle);
+    var dayShift = empShiftOn(emp, monthKey, d);
+    var shiftCell = dayShift.off
+      ? xlTd('OFF', XL_CELL + 'text-align:center;font-size:10.5px;color:'+XL.off+';background:'+XL.offSoft+';')
+      : xlTd(esc(shiftName(dayShift.code)), plainStyle + 'font-size:11px;');
+    var isLate = entry.status === 'L';
+    var lateCell = isLate
+      ? xlTd(entry.minutesLate != null ? entry.minutesLate : 'LATE', XL_CELL + 'text-align:center;font-weight:700;color:#B8752A;background:#F6E9D8;')
+      : xlTd('', plainStyle);
     html += '<tr>' +
       xlTd(fmtDateShort(monthKey,d)+', '+mi.year, plainStyle) +
       xlTd(weekdayShort(monthKey,d), plainStyle) +
+      shiftCell +
       timeCells +
+      lateCell +
       xlTd(entry.lunchMinutes?entry.lunchMinutes:'', valStyle) +
       xlTd(entry.personalMinutes?entry.personalMinutes:'', valStyle) +
       xlTd(h.total===null?'':h.total, valStyle) +
@@ -1552,21 +1575,21 @@ function employeeTimesheetExcelHTML(emp, monthKey){
     '</tr>';
   }
 
-  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 10) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 12) + '</tr>';
   html += '<tr>' +
     xlTd('Employee Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
     xlTd('', 'border:none;padding:4px;') +
-    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 5) +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 7) +
   '</tr>';
-  html += '<tr>' + xlTd('', 'border:none;padding:10px;', 10) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:10px;', 12) + '</tr>';
   html += '<tr>' +
     xlTd('Manager Signature', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 4) +
     xlTd('', 'border:none;padding:4px;') +
-    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 5) +
+    xlTd('Date', 'border:none;border-bottom:1px solid '+XL.ink+';padding:4px 4px 10px;font-size:11px;', 7) +
   '</tr>';
 
   var t = monthTotals(emp.id, monthKey);
-  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 10) + '</tr>';
+  html += '<tr>' + xlTd('', 'border:none;padding:8px;', 12) + '</tr>';
   // Styled to stand out from the rest of the sheet — same accent
   // treatment as the header row — so the month's total hours are the
   // easiest thing on the page to spot. Lunch/Personal totals line up
@@ -1575,7 +1598,9 @@ function employeeTimesheetExcelHTML(emp, monthKey){
   html += '<tr>' +
     xlTd('TOTALS', totalStyle) +
     xlTd('Days Present: '+t.daysPresent, totalStyle) +
-    xlTd('Days Absent: '+t.daysAbsent, totalStyle, 2) +
+    xlTd('Days Absent: '+t.daysAbsent, totalStyle) +
+    xlTd('Days Late: '+t.daysLate, totalStyle, 2) +
+    xlTd(t.minutesLateTotal ? t.minutesLateTotal + 'm' : '', totalStyle+'text-align:center;') +
     xlTd(t.lunchMin?t.lunchMin+'m':'', totalStyle+'text-align:center;') +
     xlTd(t.personalMin?t.personalMin+'m':'', totalStyle+'text-align:center;') +
     xlTd(t.totalHrs, totalStyle+'text-align:center;') +
@@ -1684,7 +1709,7 @@ function attendanceGridExcelHTML(monthKey){
   return excelHTMLDoc('Attendance Schedule — ' + monthKeyLabel(monthKey), html);
 }
 
-var SUMMARY_COLS = ['Name','Department','Position','Shift','Days Present','Days Absent','Total Hrs','Reg Hrs','OT Hrs','Open Concerns'];
+var SUMMARY_COLS = ['Name','Department','Position','Shift','Days Present','Days Absent','Days Late','Late (min)','Total Hrs','Reg Hrs','OT Hrs','Open Concerns'];
 
 function allEmployeesSummaryExcelHTML(monthKey){
   var totalCols = SUMMARY_COLS.length;
@@ -1701,12 +1726,14 @@ function allEmployeesSummaryExcelHTML(monthKey){
   if(!emps.length){
     html += '<tr>' + xlTd('No active employees yet.', XL_CELL+'font-style:italic;color:'+XL.inkSoft+';', totalCols) + '</tr>';
   } else {
-    var grand = { daysPresent:0, daysAbsent:0, totalHrs:0, regHrs:0, otHrs:0, openConcerns:0 };
+    var grand = { daysPresent:0, daysAbsent:0, daysLate:0, lateMin:0, totalHrs:0, regHrs:0, otHrs:0, openConcerns:0 };
     emps.forEach(function(emp){
       var t = monthTotals(emp.id, monthKey);
       var openCount = openConcernsFor(emp.id).length;
       grand.daysPresent += t.daysPresent;
       grand.daysAbsent += t.daysAbsent;
+      grand.daysLate += t.daysLate;
+      grand.lateMin += t.minutesLateTotal;
       grand.totalHrs += t.totalHrs;
       grand.regHrs += t.regHrs;
       grand.otHrs += t.otHrs;
@@ -1715,9 +1742,11 @@ function allEmployeesSummaryExcelHTML(monthKey){
         xlTd(esc(formatName(emp.name)), XL_CELL+'font-weight:600;') +
         xlTd(esc(emp.department || ''), XL_CELL) +
         xlTd(esc(emp.position || ''), XL_CELL) +
-        xlTd(esc(emp.shiftLabel || ''), XL_CELL+'font-size:11.5px;') +
+        xlTd(esc(empScheduleHeadline(emp) || emp.shiftLabel || ''), XL_CELL+'font-size:11.5px;') +
         xlTd(t.daysPresent, XL_CELL+'text-align:center;color:'+XL.good+';font-weight:700;') +
         xlTd(t.daysAbsent, XL_CELL+'text-align:center;'+(t.daysAbsent>0?'color:'+XL.bad+';font-weight:700;':'')) +
+        xlTd(t.daysLate, XL_CELL+'text-align:center;'+(t.daysLate>0?'color:#B8752A;font-weight:700;':'')) +
+        xlTd(t.minutesLateTotal, XL_CELL+'text-align:center;'+(t.minutesLateTotal>0?'color:#B8752A;font-weight:700;':'')) +
         xlTd(t.totalHrs, XL_CELL+'text-align:center;') +
         xlTd(t.regHrs, XL_CELL+'text-align:center;') +
         xlTd(t.otHrs, XL_CELL+'text-align:center;') +
@@ -1734,6 +1763,8 @@ function allEmployeesSummaryExcelHTML(monthKey){
       xlTd('', gStyle) +
       xlTd(Math.round(grand.daysPresent*100)/100, gStyle+'text-align:center;') +
       xlTd(Math.round(grand.daysAbsent*100)/100, gStyle+'text-align:center;') +
+      xlTd(grand.daysLate, gStyle+'text-align:center;') +
+      xlTd(grand.lateMin, gStyle+'text-align:center;') +
       xlTd(Math.round(grand.totalHrs*100)/100, gStyle+'text-align:center;') +
       xlTd(Math.round(grand.regHrs*100)/100, gStyle+'text-align:center;') +
       xlTd(Math.round(grand.otHrs*100)/100, gStyle+'text-align:center;') +
@@ -2293,10 +2324,10 @@ function punchCardHTML(emp, monthKey, today){
       '<div class="row" style="gap:14px; align-items:flex-end; justify-content:space-between; flex-wrap:wrap;">' +
         '<div class="row" style="gap:10px;">' +
           '<label class="field" style="margin:0;">Lunch (min)' +
-            '<input type="number" min="0" max="480" step="5" id="punch-lunch-minutes" placeholder="0" value="' + esc(entry.lunchMinutes != null ? entry.lunchMinutes : '') + '" style="width:76px;">' +
+            '<input type="number" min="0" max="480" step="5" id="punch-lunch-minutes" placeholder="0" value="' + esc(entry.lunchMinutes != null ? entry.lunchMinutes : DEFAULT_LUNCH_MIN) + '" style="width:76px;">' +
           '</label>' +
           '<label class="field" style="margin:0;">Personal (min)' +
-            '<input type="number" min="0" max="480" step="5" id="punch-personal-minutes" placeholder="0" value="' + esc(entry.personalMinutes != null ? entry.personalMinutes : '') + '" style="width:76px;">' +
+            '<input type="number" min="0" max="480" step="5" id="punch-personal-minutes" placeholder="0" value="' + esc(entry.personalMinutes != null ? entry.personalMinutes : DEFAULT_PERSONAL_MIN) + '" style="width:76px;">' +
           '</label>' +
         '</div>' +
         '<button class="btn btn-primary" data-action="punch-time-out">Time Out</button>' +
@@ -2704,7 +2735,13 @@ function adminEntriesTab(){
 
   var mi = monthInfo(monthKey);
   var rows = '';
-  for(var d=1; d<=mi.daysInMonth; d++){
+  // v46: pick a day from a calendar box instead of scrolling the month.
+  var dayView = (ui.entriesView || 'day') === 'day';
+  var selYmd = entriesSelectedYmd(monthKey);
+  var selDay = parseInt(selYmd.slice(8, 10), 10);
+  var dayList = [];
+  for(var dd = 1; dd <= mi.daysInMonth; dd++){ if(!dayView || dd === selDay) dayList.push(dd); }
+  dayList.forEach(function(d){
     var entry = getEntry(emp.id, monthKey, d) || {};
     var weekendCls = isWeekend(monthKey, d) ? ' row-weekend' : '';
     rows += '<tr class="' + weekendCls.trim() + '" data-day="' + d + '">' +
@@ -2725,16 +2762,17 @@ function adminEntriesTab(){
       '<td><input type="text" class="entry-notes" value="' + esc(entry.notes || '') + '" placeholder="—" style="min-width:140px;"></td>' +
       '<td><button type="button" class="btn btn-sm btn-ghost" data-action="clear-entry-row" title="Clear status, times and notes for this day">Clear day</button></td>' +
     '</tr>';
-  }
+  });
 
   return '<div class="stack">' +
     '<div class="row" style="justify-content:space-between; align-items:flex-end;">' +
       adminEmpSearchHTML(emp) +
       '<span id="entries-save-status" class="muted" aria-live="polite" style="font-size:12.5px; margin-bottom:9px;">' + entriesSaveStatusText() + '</span>' +
     '</div>' +
+    entriesDayBarHTML(emp, monthKey, selYmd, dayView) +
     '<p class="muted" style="margin:0; font-size:12.5px;">' + siteText('admin.entries_help') + '</p>' +
     '<div class="table-wrap">' +
-      '<table id="entries-editor-table" data-emp="' + esc(emp.id) + '" data-month="' + esc(monthKey) + '">' +
+      '<table id="entries-editor-table" class="' + (dayView ? 'dayform' : '') + '" data-emp="' + esc(emp.id) + '" data-month="' + esc(monthKey) + '">' +
         '<thead><tr><th>Date</th><th>Day</th><th>Status</th><th>Time In</th><th>Time Out</th><th>Min Late</th><th>Lunch</th><th>Personal</th><th>Notes</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody>' +
       '</table>' +
@@ -2855,6 +2893,7 @@ function adminNotificationsTab(){
         '</div>' +
         '<div class="stack" style="gap:6px; align-items:flex-end; flex:none;">' +
           '<button class="btn btn-sm btn-ghost" data-action="toggle-notification-read" data-id="' + esc(n.id) + '" data-read="' + (n.read ? '1' : '0') + '">' + (n.read ? 'Mark unread' : 'Mark read') + '</button>' +
+          '<button class="btn btn-sm btn-ghost notif-del" data-action="notif-delete" data-id="' + esc(n.id) + '" title="Delete this notification">Delete</button>' +
         '</div>' +
       '</div>' +
       (isPending ?
@@ -2877,6 +2916,7 @@ function adminNotificationsTab(){
       '<div class="row" style="gap:8px;">' +
         '<button class="btn btn-sm" data-action="mark-all-notifications" data-read="1">Mark all as read</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="mark-all-notifications" data-read="0">Mark all as unread</button>' +
+        '<button class="btn btn-sm btn-danger" data-action="notif-clear-open">Clear old…</button>' +
       '</div>' +
     '</div>' +
     '<div class="stack" style="gap:10px;">' + rows + '</div>' +
@@ -2970,9 +3010,11 @@ function adminPeopleTab(){
       '<div class="row" style="gap:8px; flex-wrap:wrap;">' +
         '<label class="btn btn-sm" for="my-admin-photo-input" style="cursor:pointer; margin:0;">' + (myPhoto ? 'Change Photo' : 'Add Photo') + '<input type="file" id="my-admin-photo-input" accept="image/*" style="display:none;"></label>' +
         (myPhoto ? '<button class="btn btn-sm btn-ghost" data-action="remove-my-admin-photo">Remove Photo</button>' : '') +
+        '<button class="btn btn-sm" data-action="edit-admin-open" data-name="' + esc(session.adminName) + '">Edit my info</button>' +
         '<button class="btn btn-sm btn-ghost" data-action="admin-change-passcode-open">Change My Passcode</button>' +
       '</div>' +
     '</div>' +
+    myAdminInfoLineHTML() +
     '<p class="muted" style="margin:0; font-size:12px;">Signed in as <strong>' + esc(session.adminName) + '</strong>' + (isMePrimary ? ' (Primary)' : '') + '. ' + siteText('people.my_account', { primary: esc(STATE.primaryAdmin || 'the primary admin') }) + '</p>' +
   '</div>';
 
@@ -3309,10 +3351,17 @@ function renderModalInto(app){
   } else if(ui.modal === 'editAdmin'){
     var editAdminName = ui.modalData.name || '';
     var editAdminEmail = (STATE.adminEmails && STATE.adminEmails[editAdminName]) || '';
-    html = modalShell('Edit admin email',
+    var editAdminProf = adminProfileOf(editAdminName);
+    html = modalShell(editAdminName === session.adminName ? 'My info' : 'Edit ' + editAdminName,
       '<div class="stack" style="gap:12px;">' +
         '<label class="field">Name<input type="text" value="' + esc(editAdminName) + '" disabled></label>' +
         '<label class="field">Email<input type="email" id="edit-admin-email" placeholder="name@example.com" value="' + esc(editAdminEmail) + '"></label>' +
+        '<div class="grid grid-2">' +
+          '<label class="field">Department<input type="text" id="edit-admin-dept" maxlength="120" value="' + esc(editAdminProf.department || '') + '"></label>' +
+          '<label class="field">Position<input type="text" id="edit-admin-position" maxlength="120" value="' + esc(editAdminProf.position || '') + '"></label>' +
+        '</div>' +
+        '<label class="field">Birthday<input type="date" id="edit-admin-birthday" max="' + calTodayYmd() + '" value="' + esc(editAdminProf.birthday || '') + '"></label>' +
+        '<p class="muted" style="margin:-6px 0 0; font-size:12px;">Optional. Only the month and day show on the company calendar; everyone sees a birthday card and a greeting goes out in Company GC on the day.</p>' +
       '</div>',
       '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
       '<button class="btn btn-primary" data-action="edit-admin-submit">Save</button>'
@@ -3396,6 +3445,8 @@ function renderModalInto(app){
   } else if(ui.modal === 'siteNameEdit'){
     html = siteNameModalHTML();
     if(!html){ ui.modal = null; return; }
+  } else if(ui.modal === 'notifClear'){
+    html = notifClearModalHTML();
   } else if(ui.modal === 'empSchedule'){
     html = empScheduleModalHTML();
     if(!html){ ui.modal = null; return; }
@@ -3421,6 +3472,7 @@ function modalShell(title, body, foot){
 
 function wireInputsAfterRender(){
   v45WireAfterRender();
+  v46WireAfterRender();
   chatWireAfterRender();
   calWireAfterRender();
   siteTextWireAfterRender();
@@ -3434,7 +3486,7 @@ function wireInputsAfterRender(){
     entriesTable.addEventListener('change', function(e){
       var kind = entryFieldKind(e.target);
       var tr = e.target.closest('tr[data-day]');
-      if(kind && tr) scheduleEntryRowSave(tr, kind === 'minlate' || kind === 'lunch' || kind === 'personal' || kind === 'notes' || kind === 'timeout' ? null : kind);
+      if(kind && tr) scheduleEntryRowSave(tr, kind === 'minlate' || kind === 'lunch' || kind === 'personal' || kind === 'notes' ? null : kind);
     });
     entriesTable.addEventListener('input', function(e){
       var kind = entryFieldKind(e.target);
@@ -4416,13 +4468,19 @@ var handlers = {
   'edit-admin-submit': function(){
     var name = ui.modalData.name;
     var email = (($('edit-admin-email')||{}).value || '').trim() || null;
+    var position = (($('edit-admin-position')||{}).value || '').trim() || null;
+    var department = (($('edit-admin-dept')||{}).value || '').trim() || null;
+    var birthday = ($('edit-admin-birthday')||{}).value || null;
+    if(birthday && birthday > calTodayYmd()){ toast('That birthday is in the future.', 'error'); return; }
     ui.modal = null;
-    apiPersist('edit-admin', { token: session.token, name: name, email: email },
+    apiPersist('edit-admin', { token: session.token, name: name, email: email, position: position, department: department, birthday: birthday },
       function(s){
         if(!s.adminEmails) s.adminEmails = {};
         if(email) s.adminEmails[name] = email; else delete s.adminEmails[name];
+        if(!s.adminProfiles) s.adminProfiles = {};
+        s.adminProfiles[name] = { birthday: birthday, position: position, department: department };
       },
-      { successMsg: 'Admin updated' });
+      { successMsg: name === session.adminName ? 'Your info is saved' : 'Admin updated', onSuccess: function(){ if(typeof calLoad === 'function' && cal && cal.data) calLoad(true); } });
   },
   'remove-admin': function(el){
     var name = el.dataset.name;
@@ -6717,7 +6775,7 @@ function calendarPageHTML(){
       (u.it.type === 'holiday' ? ' · Holiday' : u.it.type === 'event' ? ' · ' + esc(calTimeLabel(u.it.ev)) : '') + '</span></span></button>';
   }).join('') : '<p class="empty" style="margin:0;">Nothing in the next 45 days.</p>';
 
-  var emp = session.role === 'employee' ? getEmployee(session.employeeId) : null;
+  var emp = myBirthdayHolder();
   var bdayCard = emp ? '<div class="card card-pad stack" style="gap:6px;"><div style="font-weight:600;">Your birthday</div>' +
       '<div class="muted" style="font-size:13px;">' + (emp.birthday ? esc(MONTH_NAMES[Number(emp.birthday.slice(5, 7)) - 1] + ' ' + Number(emp.birthday.slice(8, 10))) + ' — the team gets a reminder and you get a greeting in Company GC chat.' : 'Add it so the team can greet you on your day. Only the month and day are shown.') + '</div>' +
       '<div><button type="button" class="btn btn-sm" data-action="cal-bday-open">' + (emp.birthday ? 'Change' : 'Add birthday') + '</button></div></div>' : '';
@@ -6785,7 +6843,7 @@ function calModalHTML(){
       '<button class="btn btn-danger" data-action="cal-delete">Delete</button>');
   }
   if(ui.modal === 'calBirthday'){
-    var emp = getEmployee(session.employeeId);
+    var emp = myBirthdayHolder();
     return modalShell('Your birthday',
       '<label class="field">Birthday<input type="date" id="cal-bday" value="' + esc(emp && emp.birthday ? emp.birthday : '') + '" max="' + calTodayYmd() + '"></label>' +
       '<p class="muted" style="margin:8px 0 0; font-size:12.5px;">' + siteText('calendar.birthday_privacy') + '</p>',
@@ -6802,10 +6860,16 @@ function calWireAfterRender(){
   if(greet && gw) greet.addEventListener('change', function(){ gw.hidden = !greet.checked; });
 }
 function calSaveBirthday(value){
-  var emp = getEmployee(session.employeeId);
+  var emp = session.role === 'employee' ? getEmployee(session.employeeId) : null;
   ui.modal = null;
   apiPersist('set-my-birthday', { token: session.token, birthday: value },
-    function(){ if(emp) emp.birthday = value; },
+    function(s){
+      if(emp) emp.birthday = value;
+      if(session.role === 'admin' && session.adminName){
+        if(!s.adminProfiles) s.adminProfiles = {};
+        s.adminProfiles[session.adminName] = Object.assign({}, adminProfileOf(session.adminName), { birthday: value });
+      }
+    },
     { successMsg: value ? 'Birthday saved' : 'Birthday removed', onSuccess: function(){ calLoad(true); } });
 }
 var CAL_HANDLERS = {
@@ -7717,7 +7781,7 @@ function rowMenuItemsHTML(kind, key){
     var isPrimary = key === STATE.primaryAdmin;
     var canManage = isMePrimary && !isPrimary;
     var n = 'data-name="' + esc(key) + '"';
-    it('edit-admin-open', 'Edit email', n);
+    it('edit-admin-open', 'Edit details', n);
     if(canManage && STATE.adminPasscodeSet && STATE.adminPasscodeSet[key]) it('reset-admin-passcode-open', 'Reset passcode', n);
     if(canManage && STATE.adminPhotos && STATE.adminPhotos[key]) it('remove-admin-photo', 'Remove photo', n);
     if(!isPrimary){ sep(); it('remove-admin', 'Remove admin', n, true); }
@@ -7823,7 +7887,7 @@ function adminsTableHTML(){
     return '<tr>' +
       '<td><div class="person-cell">' + avatarHTML(photo, a, 30) +
         '<div class="person-text"><div class="nm">' + esc(a) + (isPrimary ? ' <span class="pill pill-accent">Primary</span>' : '') + '</div>' +
-        '<div class="sub">' + esc(email || 'No email') + '</div></div></div></td>' +
+        '<div class="sub">' + esc([adminProfileOf(a).position, email || 'No email'].filter(Boolean).join(' · ')) + '</div></div></div></td>' +
       '<td class="hide-sm muted">' + (hasOwnPasscode ? 'Personal' : 'Shared') + '</td>' +
       '<td>' + (canManage
           ? '<label class="row" style="gap:6px; align-items:center; font-size:12.5px; font-weight:400; flex-wrap:nowrap;"><input type="checkbox" data-action="toggle-admin-broadcast" data-name="' + esc(a) + '"' + (canBroadcastThem ? ' checked' : '') + '> Allowed</label>'
@@ -8015,6 +8079,7 @@ function companyFormsCardHTMLV45(){
    is (Manila date) and only ever sends name + photo, never the year. */
 function bdayFirstName(name){
   var n = String(name || '').trim();
+  if(n.indexOf(',') === -1 && /[a-z]/.test(n)) return n.split(/\s+/)[0]; // admins: "Kenneth Mamuric"
   var first = n.indexOf(',') !== -1 ? n.split(',')[1].trim() : n;
   first = first.split(/\s+/)[0] || n;
   return first.charAt(0).toUpperCase() + first.slice(1).toLowerCase();
@@ -8034,7 +8099,7 @@ function birthdayBannerHTML(){
   if(!list.length || bdayIsHidden()) return '';
   var names = list.map(function(p){ return bdayFirstName(p.name); });
   var joined = names.length === 1 ? names[0] : names.slice(0, -1).join(', ') + ' & ' + names[names.length - 1];
-  var mine = session.role === 'employee' && list.some(function(p){ return p.id === session.employeeId; });
+  var mine = list.some(function(p){ return (session.role === 'employee' && p.id === session.employeeId) || (session.role === 'admin' && p.id === 'a:' + session.adminName); });
   var photoSize = list.length === 1 ? 104 : (list.length === 2 ? 84 : 68);
   var photos = list.map(function(p){ return bdayPhotoHTML(p, photoSize); }).join('');
   var diamonds = '<svg class="bday-motif" viewBox="0 0 120 120" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="3">' +
@@ -8175,9 +8240,201 @@ function v45WireAfterRender(){
 })();
 
 
-[{ key: 'people.grace_help', page: 'people', label: 'Grace period note (shift windows)', def: 'A time in within the grace period still counts as on time. After it, the person is marked Late and the minutes are counted from the required time in.' }].forEach(function(d){
+[{ key: 'people.grace_help', page: 'people', label: 'Grace period note (shift windows)', def: 'A time in within the grace period still counts as on time. After it, the person is marked Late and the minutes late are counted from the end of the grace period (e.g. 12:00 start, 15 min grace, 12:42 in = 27 min late).' }].forEach(function(d){
   if(!SITE_TEXT_BY_KEY[d.key]){ SITE_TEXT_DEFS.push(d); SITE_TEXT_BY_KEY[d.key] = d; }
 });
+
+/* ============================================================
+   v46 — admin profile (birthday/position/department), clearing old
+   notifications, Edit Entries day picker, standard lunch/personal
+   ============================================================ */
+var DEFAULT_LUNCH_MIN = 30;
+var DEFAULT_PERSONAL_MIN = 30;
+
+function adminProfileOf(name){
+  return (STATE.adminProfiles && STATE.adminProfiles[name]) || {};
+}
+function fmtBirthdayMD(ymd){
+  if(!ymd) return '';
+  return MONTH_NAMES[Number(ymd.slice(5, 7)) - 1] + ' ' + Number(ymd.slice(8, 10));
+}
+function myAdminInfoLineHTML(){
+  var p = adminProfileOf(session.adminName);
+  var bits = [];
+  if(p.position) bits.push(esc(p.position));
+  if(p.department) bits.push(esc(p.department));
+  bits.push(p.birthday ? 'Birthday: ' + esc(fmtBirthdayMD(p.birthday)) : '<span class="muted">No birthday on file</span>');
+  return '<p style="margin:0; font-size:13px;">' + bits.join(' · ') + '</p>';
+}
+/* The signed-in person's own birthday record, employee or admin — used by
+   the calendar's "Your birthday" card and window. */
+function myBirthdayHolder(){
+  if(session.role === 'employee') return getEmployee(session.employeeId);
+  if(session.role === 'admin' && session.adminName) return { birthday: adminProfileOf(session.adminName).birthday || null };
+  return null;
+}
+
+/* ---------- Edit Entries: pick a day ---------- */
+function entriesSelectedYmd(monthKey){
+  var v = ui.entriesDate;
+  if(!v || v.slice(0, 7) !== monthKey){
+    v = monthKey === currentMonthKey() ? calTodayYmd() : monthKey + '-01';
+    ui.entriesDate = v;
+  }
+  var mi = monthInfo(monthKey);
+  if(parseInt(v.slice(8, 10), 10) > mi.daysInMonth){ v = monthKey + '-' + pad2(mi.daysInMonth); ui.entriesDate = v; }
+  return v;
+}
+function entriesDayBarHTML(emp, monthKey, selYmd, dayView){
+  var p = ymdParts(selYmd);
+  var s = empShiftOn(emp, p.mk, p.day);
+  var req = !s.off && s.code ? shiftRequiredTimeIn(s.code) : null;
+  var grace = !s.off && s.code ? shiftGraceMinutes(s.code) : 0;
+  var info = s.off ? 'Not scheduled' : shiftName(s.code) + (req ? ' · starts ' + fmtTime12(req) : '') + (grace ? ' · ' + grace + ' min grace' : '');
+  return '<div class="entries-daybar">' +
+    '<div class="seg" role="group" aria-label="Show">' +
+      '<button type="button" class="' + (dayView ? 'on' : '') + '" data-action="entries-view" data-view="day" aria-pressed="' + dayView + '">One day</button>' +
+      '<button type="button" class="' + (dayView ? '' : 'on') + '" data-action="entries-view" data-view="month" aria-pressed="' + !dayView + '">Whole month</button>' +
+    '</div>' +
+    '<div class="daypick">' +
+      '<button type="button" class="btn btn-sm" data-action="entries-day-step" data-delta="-1" aria-label="Previous day"' + (dayView ? '' : ' disabled') + '>&lsaquo;</button>' +
+      '<input type="date" id="entries-date" value="' + esc(selYmd) + '" aria-label="Pick a day">' +
+      '<button type="button" class="btn btn-sm" data-action="entries-day-step" data-delta="1" aria-label="Next day"' + (dayView ? '' : ' disabled') + '>&rsaquo;</button>' +
+      (selYmd !== calTodayYmd() ? '<button type="button" class="btn btn-sm btn-ghost" data-action="entries-day-today">Today</button>' : '') +
+    '</div>' +
+    (dayView ? '<div class="dayinfo"><strong>' + esc(fmtYmdLong(selYmd)) + '</strong> <span class="muted">· ' + esc(info) + '</span></div>' : '') +
+  '</div>';
+}
+function entriesGoTo(ymd){
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(ymd || '')) return;
+  flushEntryAutosaves();
+  ui.entriesDate = ymd;
+  ui.adminMonth = ymd.slice(0, 7);
+  render();
+}
+handlers['entries-view'] = function(el){
+  flushEntryAutosaves();
+  ui.entriesView = el.getAttribute('data-view') === 'month' ? 'month' : 'day';
+  render();
+};
+handlers['entries-day-step'] = function(el){
+  var cur = entriesSelectedYmd(adminMonth());
+  entriesGoTo(ymdAddDays(cur, Number(el.getAttribute('data-delta')) || 0));
+};
+handlers['entries-day-today'] = function(){ entriesGoTo(calTodayYmd()); };
+
+/* ---------- Notifications: delete one, or clear old ones ---------- */
+handlers['notif-delete'] = function(el){
+  // Two clicks: the first turns the button into "Confirm delete".
+  if(el.getAttribute('data-confirm') !== '1'){
+    el.setAttribute('data-confirm', '1');
+    el.textContent = 'Confirm delete';
+    el.classList.remove('btn-ghost'); el.classList.add('btn-danger');
+    setTimeout(function(){ if(el.isConnected && el.getAttribute('data-confirm') === '1'){ el.removeAttribute('data-confirm'); el.textContent = 'Delete'; el.classList.add('btn-ghost'); el.classList.remove('btn-danger'); } }, 4000);
+    return;
+  }
+  var id = el.dataset.id;
+  apiPersist('delete-notifications', { token: session.token, ids: [id] },
+    function(s){ s.notifications = (s.notifications || []).filter(function(n){ return n.id !== id; }); },
+    { successMsg: 'Notification deleted' });
+};
+function notifClearMatches(opts){
+  var cutoff = opts.days > 0 ? Date.now() - opts.days * 24 * 60 * 60 * 1000 : null;
+  return (STATE.notifications || []).filter(function(n){
+    if(n.status === 'pending') return false;
+    if(opts.type && opts.type !== 'all' && n.type !== opts.type) return false;
+    if(opts.onlyRead && !n.read) return false;
+    if(cutoff !== null && !(Date.parse(n.createdAt) < cutoff)) return false;
+    return true;
+  });
+}
+function notifClearOpts(){
+  var d = ui.modalData || {};
+  return { type: d.type || 'all', onlyRead: !!d.onlyRead, days: typeof d.days === 'number' ? d.days : 7 };
+}
+function notifClearModalHTML(){
+  var o = notifClearOpts();
+  var count = notifClearMatches(o).length;
+  var typeOpts = '<option value="all">All types</option>' + Object.keys(NOTIF_TYPES).filter(function(t){ return t !== 'announcement' && t !== 'reminder'; }).map(function(t){
+    return '<option value="' + t + '"' + (o.type === t ? ' selected' : '') + '>' + esc(NOTIF_TYPES[t].label) + '</option>';
+  }).join('');
+  var ageOpts = [[0, 'Any age (including today)'], [1, 'Older than 1 day'], [7, 'Older than 7 days'], [30, 'Older than 30 days'], [90, 'Older than 90 days']].map(function(a){
+    return '<option value="' + a[0] + '"' + (o.days === a[0] ? ' selected' : '') + '>' + a[1] + '</option>';
+  }).join('');
+  return modalShell('Clear old notifications',
+    '<div class="stack" style="gap:12px;" id="notif-clear-form">' +
+      '<label class="field">Type<select id="nc-type">' + typeOpts + '</select></label>' +
+      '<label class="field">Age<select id="nc-days">' + ageOpts + '</select></label>' +
+      '<label style="display:flex; gap:8px; align-items:center; font-size:13.5px;"><input type="checkbox" id="nc-read"' + (o.onlyRead ? ' checked' : '') + '> Only ones already marked read</label>' +
+      '<p class="muted" style="margin:0; font-size:12.5px;">Requests still waiting for your approval are never cleared here. Deleting a request also removes it from that employee’s “My requests” list. This can’t be undone — export a backup first if you want a copy.</p>' +
+      '<p style="margin:0; font-weight:600;">' + (count ? count + ' notification' + (count === 1 ? '' : 's') + ' will be deleted.' : 'Nothing matches.') + '</p>' +
+    '</div>',
+    '<button class="btn btn-ghost" data-action="close-modal">Cancel</button>' +
+    '<button class="btn btn-danger" data-action="notif-clear-submit"' + (count ? '' : ' disabled') + '>Delete ' + (count || '') + '</button>'
+  );
+}
+handlers['notif-clear-open'] = function(){
+  ui.modal = 'notifClear';
+  ui.modalData = { type: ui.notifFilter && ui.notifFilter !== 'all' ? ui.notifFilter : 'all', onlyRead: false, days: 7 };
+  render();
+};
+handlers['notif-clear-submit'] = function(){
+  var o = notifClearOpts();
+  var ids = notifClearMatches(o).map(function(n){ return n.id; });
+  if(!ids.length) return;
+  ui.modal = null;
+  // Send the exact rows shown in the count, so what's deleted is exactly
+  // what the admin saw (never anything that arrived since).
+  apiPersist('delete-notifications', { token: session.token, ids: ids },
+    function(s){ var gone = {}; ids.forEach(function(i){ gone[i] = 1; }); s.notifications = (s.notifications || []).filter(function(n){ return !gone[n.id]; }); },
+    { successMsg: ids.length + ' notification' + (ids.length === 1 ? '' : 's') + ' deleted' });
+};
+
+function v46WireAfterRender(){
+  // One-day view is laid out as a simple form (label above each field)
+  // instead of a wide one-row table, so nothing scrolls sideways.
+  var et = document.querySelector('#entries-editor-table.dayform');
+  if(et){
+    var heads = Array.prototype.map.call(et.querySelectorAll('thead th'), function(th){ return th.textContent.trim(); });
+    et.querySelectorAll('tbody tr').forEach(function(tr){
+      Array.prototype.forEach.call(tr.children, function(td, i){ if(heads[i]) td.setAttribute('data-label', heads[i]); });
+    });
+  }
+  var ed = $('entries-date');
+  if(ed) ed.addEventListener('change', function(){ if(ed.value) entriesGoTo(ed.value); });
+  var nc = $('notif-clear-form');
+  if(nc) nc.addEventListener('change', function(){
+    ui.modalData.type = ($('nc-type') || {}).value || 'all';
+    ui.modalData.days = Number(($('nc-days') || {}).value) || 0;
+    ui.modalData.onlyRead = !!($('nc-read') || {}).checked;
+    render();
+  });
+}
+
+(function injectV46Styles(){
+  var css =
+  '.entries-daybar{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 12px;}' +
+  '.entries-daybar .seg{display:inline-flex;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden;}' +
+  '.entries-daybar .seg button{border:0;background:var(--surface);padding:7px 12px;font:inherit;font-size:13px;font-weight:600;color:var(--ink-soft);cursor:pointer;}' +
+  '.entries-daybar .seg button + button{border-left:1px solid var(--line-strong);}' +
+  '.entries-daybar .seg button.on{background:var(--accent);color:#fff;}' +
+  '.entries-daybar .daypick{display:flex;gap:6px;align-items:center;}' +
+  '.entries-daybar input[type=date]{font-family:inherit;font-size:14px;padding:7px 9px;border-radius:7px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);width:auto;}' +
+  '.entries-daybar .dayinfo{font-size:13.5px;}' +
+  '.notif-row .stack .btn{white-space:nowrap;}' +
+  'table.dayform{min-width:0;} table.dayform thead{display:none;}' +
+  'table.dayform tbody tr{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px 16px;padding:14px 16px;}' +
+  'table.dayform tbody tr:hover{background:transparent;}' +
+  'table.dayform td{display:flex;flex-direction:column;gap:5px;padding:0;border:0;white-space:normal;}' +
+  'table.dayform td::before{content:attr(data-label);font-size:10.5px;text-transform:uppercase;letter-spacing:.09em;color:var(--ink-soft);font-weight:600;}' +
+  'table.dayform td:first-child, table.dayform td:nth-child(2){display:none;}' +
+  'table.dayform td:last-child::before{content:"\\00a0";}' +
+  'table.dayform td > *{max-width:100%;} table.dayform input[type=number]{width:100% !important;font-family:inherit;font-size:13.5px;padding:8px 10px;border-radius:7px;border:1px solid var(--line-strong);background:var(--surface);color:var(--ink);} table.dayform select{min-width:0 !important;}' +
+  'table.dayform td:last-child{justify-content:flex-end;}' +
+  'table.dayform td .time-field, table.dayform td > div{display:flex;gap:6px;align-items:center;}';
+  var s = document.createElement('style'); s.textContent = css; document.head.appendChild(s);
+})();
+
 
 /* ============================================================
    BOOT
